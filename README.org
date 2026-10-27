@@ -39,4 +39,4 @@ Use =EMACS=/path/to/emacs= to test against a specific build. The indentation tes
 
 * License
 
-GPL-3.0-or-later. See [[file:LICENSE][LICENSE]].
+MIT. See [[file:LICENSE][LICENSE]].
