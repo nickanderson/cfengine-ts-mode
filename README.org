@@ -28,6 +28,20 @@ Then build the grammar once (needs a C compiler and git):
 
 No =auto-mode-alist= setup is needed.
 
+** Opting out of detection by content
+
+The package adds an entry to =magic-mode-alist=, which Emacs consults before =auto-mode-alist=. It looks at the first 4000 characters of a =.cf= or =.cf.sub= file and opens it in =cfengine3-mode= (remapped to =cfengine-ts-mode=) if there is a line like =bundle agent main=.
+
+To turn that off and decide by file name yourself, remove the entry after the package is activated, for example in =:config=:
+
+#+begin_src emacs-lisp
+(setq magic-mode-alist
+      (delete '(cfengine-ts-mode-policy-file-p . cfengine3-mode)
+              magic-mode-alist))
+;; Then, if you want, map files by name instead:
+(add-to-list 'auto-mode-alist '("/masterfiles/.*\\.cf\\'" . cfengine-ts-mode))
+#+end_src
+
 * Customization
 
 - =cfengine-ts-mode-indent-offset= (default 2)
