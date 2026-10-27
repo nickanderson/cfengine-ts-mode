@@ -44,6 +44,15 @@
 ;; Install the grammar once with M-x cfengine-ts-mode-install-grammar.
 ;; When it is available, `cfengine-mode' and `cfengine3-mode' are
 ;; remapped to this mode, which also covers Org src blocks in "cfengine3".
+;;
+;; `.cf' is shared with Postfix and sendmail, so files are recognized by
+;; content: a `.cf' or `.cf.sub' file with a bundle, body or promise
+;; block opens in `cfengine3-mode', or in this mode once the grammar is
+;; installed.
+;;
+;; Function completion and ElDoc signatures come from `cfengine.el'.
+;; They use the syntax of the installed `cf-promises' (see
+;; `cfengine-cf-promises'), or built-in data when it isn't found.
 
 ;;; Code:
 
@@ -62,10 +71,48 @@
 (add-to-list 'treesit-language-source-alist
              '(cfengine "https://github.com/olehermanse/tree-sitter-cfengine"))
 
+;;; Activation
+
+;; Keep in sync with the autoloaded form at the end of this file.
+(defun cfengine-ts-mode--remap ()
+  "Remap the regexp-based CFEngine modes to `cfengine-ts-mode'."
+  (add-to-list 'major-mode-remap-defaults '(cfengine-mode . cfengine-ts-mode))
+  (add-to-list 'major-mode-remap-defaults '(cfengine3-mode . cfengine-ts-mode)))
+
 (defun cfengine-ts-mode-install-grammar ()
   "Build and install the CFEngine tree-sitter grammar."
   (interactive)
-  (treesit-install-language-grammar 'cfengine))
+  (treesit-install-language-grammar 'cfengine)
+  (when (treesit-language-available-p 'cfengine)
+    (cfengine-ts-mode--remap)))
+
+;; `magic-mode-alist' calls this for every file visited, so the whole
+;; definition goes into the autoloads (via `progn') rather than a stub
+;; that would load this package on the first visit.
+;;;###autoload
+(progn
+  (defun cfengine-ts-mode-policy-file-p ()
+    "Return non-nil if the current buffer looks like CFEngine policy.
+The file name must end in .cf or .cf.sub and the text must contain a
+bundle, body or promise block.  Intended for `magic-mode-alist'."
+    (and buffer-file-name
+         (string-match-p "\\.cf\\(?:\\.sub\\)?\\'" buffer-file-name)
+         (re-search-forward
+          "^[ \t]*\\(?:bundle\\|body\\|promise\\)[ \t]+[[:alnum:]_]+[ \t]+[[:alnum:]_.:]+"
+          nil t))))
+
+;;;###autoload
+(add-to-list 'magic-mode-alist '(cfengine-ts-mode-policy-file-p . cfengine3-mode))
+
+;;; Completion
+
+(defun cfengine-ts-mode--completion-at-point ()
+  "Complete CFEngine function names via `cfengine3-completion-function'.
+Non-exclusive, and nil when `cf-promises' provides no syntax, so other
+completion functions still get a turn."
+  (when-let* ((capf (cfengine3-completion-function))
+              ((nth 2 capf)))
+    (append capf '(:exclusive no))))
 
 ;;; Font lock
 
@@ -220,12 +267,22 @@ The grammar parses attributes after @else as a separate half_promise."
 (define-derived-mode cfengine-ts-mode prog-mode "CFEngine3[ts]"
   "Major mode for CFEngine 3 policy, powered by tree-sitter."
   :syntax-table cfengine3-mode-syntax-table
+  ;; Settings shared with `cfengine3-mode' that don't depend on the parser.
+  (cfengine-common-settings)
+  (setq-local comment-end "")
+  (setq-local prettify-symbols-alist cfengine3--prettify-symbols-alist)
+  (when cfengine-cf-promises
+    (setq-local compile-command
+                (concat cfengine-cf-promises " -f "
+                        (when buffer-file-name
+                          (shell-quote-argument buffer-file-name)))))
+  (add-hook 'eldoc-documentation-functions
+            #'cfengine3-documentation-function nil t)
+  (add-hook 'completion-at-point-functions
+            #'cfengine-ts-mode--completion-at-point nil t)
   (when (treesit-ready-p 'cfengine)
     (treesit-parser-create 'cfengine)
     (setq-local indent-tabs-mode nil)
-    (setq-local comment-start "# "
-                comment-start-skip "#+[\t ]*"
-                comment-end "")
     (setq-local treesit-font-lock-settings cfengine-ts-mode--font-lock-settings
                 treesit-font-lock-feature-list
                 '((comment definition keyword)
@@ -244,9 +301,13 @@ The grammar parses attributes after @else as a separate half_promise."
 
 (derived-mode-add-parents 'cfengine-ts-mode '(cfengine3-mode))
 
-(when (treesit-ready-p 'cfengine t)
-  (add-to-list 'major-mode-remap-alist '(cfengine-mode . cfengine-ts-mode))
-  (add-to-list 'major-mode-remap-alist '(cfengine3-mode . cfengine-ts-mode)))
+;; Inlined rather than calling `cfengine-ts-mode--remap', so that
+;; startup doesn't load the whole package.
+;;;###autoload
+(when (and (fboundp 'treesit-language-available-p)
+           (treesit-language-available-p 'cfengine))
+  (add-to-list 'major-mode-remap-defaults '(cfengine-mode . cfengine-ts-mode))
+  (add-to-list 'major-mode-remap-defaults '(cfengine3-mode . cfengine-ts-mode)))
 
 (provide 'cfengine-ts-mode)
 ;;; cfengine-ts-mode.el ends here

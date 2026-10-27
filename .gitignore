@@ -1,2 +1,3 @@
 *.elc
 /.treesit/
+/cfengine-ts-mode-autoloads.el
