@@ -93,12 +93,12 @@
 (progn
   (defun cfengine-ts-mode-policy-file-p ()
     "Return non-nil if the current buffer looks like CFEngine policy.
-The file name must end in .cf or .cf.sub, optionally followed by .in
-for templates such as masterfiles' promises.cf.in, and the text must
-contain a bundle, body or promise block header: the keyword, a type and
-a name, then optionally a parameter list, an opening brace and a
-comment, and nothing else on the line.  Keywords are case-sensitive, as in CFEngine.
-Intended for `magic-mode-alist'."
+The file name must end in .cf, .cf.sub, .cf.in or .cf.sub.in (the .in
+forms are templates such as masterfiles' promises.cf.in), and the text
+must contain a bundle, body or promise block header: the keyword, a
+type and a name, then optionally a parameter list, an opening brace and
+a comment, and nothing else on the line.  Keywords are case-sensitive,
+as in CFEngine.  Intended for `magic-mode-alist'."
     (and buffer-file-name
          (string-match-p "\\.cf\\(?:\\.sub\\)?\\(?:\\.in\\)?\\'" buffer-file-name)
          ;; String regexp, not `rx': this runs from the autoloads.
