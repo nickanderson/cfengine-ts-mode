@@ -194,7 +194,12 @@ OVERRIDE, START and END are as in `treesit-font-lock-rules'."
 
    :language 'cfengine
    :feature 'function
-   '((calling_identifier) @font-lock-function-call-face)
+   ;; A bare name as a value, or in a list value, refers to a bundle or
+   ;; body (usebundle => helper, bundlesequence => { main }), like a call
+   ;; without arguments.  As a call argument it names a variable instead.
+   '((calling_identifier) @font-lock-function-call-face
+     (attribute (qualified_identifier) @font-lock-function-call-face)
+     (attribute (list (qualified_identifier) @font-lock-function-call-face)))
 
    :language 'cfengine
    :feature 'variable

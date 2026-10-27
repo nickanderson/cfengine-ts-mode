@@ -309,6 +309,23 @@
                                                       temporary-file-directory)))
                      '(:error))))))
 
+(ert-deftest cfengine-ts-mode-fontifies-bundle-and-body-references ()
+  (skip-unless (treesit-ready-p 'cfengine t))
+  (with-temp-buffer
+    (insert "body common control\n{\n  bundlesequence => { main, @(x) };\n}\n"
+            "bundle agent main\n{\n  methods:\n    \"a\" usebundle => helper;\n"
+            "  vars:\n    \"v\" slist => getvalues(input);\n}\n")
+    (cfengine-ts-mode)
+    (font-lock-ensure)
+    (dolist (case '(("{ main" . font-lock-function-call-face)
+                    ("@(x" . font-lock-variable-use-face)
+                    ("=> helper" . font-lock-function-call-face)
+                    ("getvalues" . font-lock-function-call-face)
+                    ("(input" . font-lock-variable-use-face)))
+      (goto-char (point-min))
+      (search-forward (car case))
+      (should (eq (get-text-property (1- (point)) 'face) (cdr case))))))
+
 ;;; Activation, in a fresh Emacs that has only the generated autoloads
 
 (defun cfengine-ts-mode-tests--fresh-emacs (grammar files)
