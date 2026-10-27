@@ -774,9 +774,14 @@ clash with the real ones."
   (when-let* ((dir (cfengine-ts-mode--policy-root))
               (root (expand-file-name dir)))
     (let ((self (file-truename buffer-file-name)))
-      (seq-remove (lambda (file) (equal (file-truename file) self))
+      ;; Skip dotfiles such as Emacs lock files (.#main.cf, a symlink to
+      ;; nowhere) and anything else that isn't a readable regular file.
+      (seq-remove (lambda (file)
+                    (or (equal (file-truename file) self)
+                        (not (file-regular-p file))
+                        (not (file-readable-p file))))
                   (directory-files-recursively
-                   root "\\.cf\\'" nil
+                   root "\\`[^.].*\\.cf\\'" nil
                    (lambda (dir)
                      (let ((name (file-name-nondirectory dir)))
                        (not (or (string-prefix-p "." name)
@@ -857,6 +862,259 @@ See also `cfengine-ts-mode-lint-arguments'."
                                   (cfengine-ts-mode--lint-context)
                                   report-fn)))
 
+;;; Completion and ElDoc for promise types, attributes and values
+;;
+;; These read the syntax description from `cf-promises' (see
+;; `cfengine3-make-syntax-cache') and work out the context from the text,
+;; so they work on code that doesn't parse yet.
+
+(defun cfengine-ts-mode--syntax (&rest path)
+  "Return the entry at PATH, a list of keys, in the `cf-promises' syntax."
+  (let ((node (cfengine3-make-syntax-cache)))
+    (dolist (key path node)
+      (setq node (cdr (assq (if (stringp key) (intern key) key) node))))))
+
+(defun cfengine-ts-mode--block-header (open)
+  "Return (KIND TYPE) for the block whose opening brace is at OPEN.
+KIND is \"bundle\", \"body\" or \"promise\"."
+  (save-excursion
+    (goto-char open)
+    (when (looking-back "^[ \t]*" (line-beginning-position))
+      (forward-line -1)
+      (while (and (not (bobp)) (not (cfengine-ts-mode--code-line-p)))
+        (forward-line -1)))
+    (back-to-indentation)
+    (when (looking-at "\\(bundle\\|body\\|promise\\)[ \t]+\\([[:alnum:]_]+\\)")
+      (list (match-string-no-properties 1) (match-string-no-properties 2)))))
+
+(defun cfengine-ts-mode--section (open)
+  "Return the promise type of the section around point, after OPEN."
+  (save-excursion
+    (let (section)
+      (while (and (not section)
+                  (re-search-backward
+                   "^[ \t]*\\([[:alnum:]_]+\\):[ \t]*\\(?:#.*\\)?$" open t))
+        (unless (nth 8 (syntax-ppss))
+          (setq section (match-string-no-properties 1))))
+      section)))
+
+(defun cfengine-ts-mode--context ()
+  "Return the CFEngine context at point as a plist, or nil.
+Keys: :block (KIND TYPE), :section, :depth, and :attribute when point
+is in an attribute's value."
+  (let* ((ppss (syntax-ppss))
+         (open (car (nth 9 ppss))))
+    (when open
+      (save-excursion
+        (let* ((header (cfengine-ts-mode--block-header open))
+               (attribute
+                (save-excursion
+                  (when (nth 3 ppss) (goto-char (nth 8 ppss)))
+                  (skip-syntax-backward "w_")
+                  (skip-chars-backward " \t")
+                  ;; Directly after "NAME =>", or in a list or call after it.
+                  (when (or (looking-back "=>" (- (point) 2))
+                            (and (> (car (syntax-ppss)) 1)
+                                 (progn (goto-char (nth 1 (syntax-ppss)))
+                                        (skip-chars-backward " \t")
+                                        (or (looking-back "=>" (- (point) 2))
+                                            (progn (skip-syntax-backward "w_")
+                                                   (skip-chars-backward " \t")
+                                                   (looking-back "=>" (- (point) 2)))))))
+                    (backward-char 2)
+                    (skip-chars-backward " \t")
+                    (let ((end (point)))
+                      (skip-syntax-backward "w_")
+                      (buffer-substring-no-properties (point) end))))))
+          (list :block header
+                :section (and (equal (car header) "bundle")
+                              (cfengine-ts-mode--section open))
+                :depth (car ppss)
+                :string (nth 3 ppss)
+                :attribute attribute))))))
+
+(defun cfengine-ts-mode--attributes (context)
+  "Return the syntax entries of the attributes allowed in CONTEXT."
+  (pcase (plist-get context :block)
+    (`("bundle" ,_)
+     (when-let* ((section (plist-get context :section)))
+       (cfengine-ts-mode--syntax 'promiseTypes section 'attributes)))
+    (`("body" ,type)
+     (cfengine-ts-mode--syntax 'bodyTypes type 'attributes))))
+
+(defun cfengine-ts-mode--attribute (context name)
+  "Return the syntax entry of attribute NAME in CONTEXT, or nil."
+  (cdr (assq (intern name) (cfengine-ts-mode--attributes context))))
+
+(defvar cfengine-ts-mode--definitions-cache (make-hash-table :test #'equal)
+  "Block definitions per policy file: FILE -> (MTIME . DEFINITIONS).")
+
+(defun cfengine-ts-mode--scan-definitions ()
+  "Return the (KIND TYPE NAME) of each block header in the current buffer."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char (point-min))
+      (let (definitions)
+        (while (re-search-forward
+                "^[ \t]*\\(bundle\\|body\\)[ \t]+\\([[:alnum:]_]+\\)[ \t]+\\([[:alnum:]_]+\\)"
+                nil t)
+          (push (list (match-string-no-properties 1)
+                      (match-string-no-properties 2)
+                      (match-string-no-properties 3))
+                definitions))
+        definitions))))
+
+(defun cfengine-ts-mode--definitions ()
+  "Return the bundles and bodies in the buffer and its policy tree.
+Each is (KIND TYPE NAME)."
+  (append
+   (cfengine-ts-mode--scan-definitions)
+   (mapcan
+    (lambda (file)
+      (let ((mtime (file-attribute-modification-time (file-attributes file)))
+            (cached (gethash file cfengine-ts-mode--definitions-cache)))
+        (if (and cached (equal (car cached) mtime))
+            (copy-sequence (cdr cached))
+          (let ((definitions
+                 ;; The file may be gone since the directory was listed.
+                 (ignore-error file-missing
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (cfengine-ts-mode--scan-definitions)))))
+            (puthash file (cons mtime definitions)
+                     cfengine-ts-mode--definitions-cache)
+            (copy-sequence definitions)))))
+    (cfengine-ts-mode--lint-context))))
+
+(defun cfengine-ts-mode--value-candidates (entry name)
+  "Return completions for the value of attribute NAME described by ENTRY."
+  (pcase (cdr (assq 'type entry))
+    ("option" (split-string (cdr (assq 'range entry)) "," t))
+    ("body"
+     (seq-uniq (mapcan (lambda (d)
+                         (and (equal (car d) "body") (equal (nth 1 d) name)
+                              (list (nth 2 d))))
+                       (cfengine-ts-mode--definitions))))
+    ("bundle"
+     (let ((type (if (member name '("edit_line" "edit_xml")) name "agent")))
+       (seq-uniq (mapcan (lambda (d)
+                           (and (equal (car d) "bundle") (equal (nth 1 d) type)
+                                (list (nth 2 d))))
+                         (cfengine-ts-mode--definitions)))))))
+
+(defun cfengine-ts-mode--statement-start-p (open)
+  "Non-nil if a new statement starts at point, in the block opened at OPEN.
+That is after a section header, a class guard, a finished statement or
+the block's brace, rather than in a promise awaiting more attributes."
+  (save-excursion
+    (let ((found nil))
+      (while (and (not found) (zerop (forward-line -1))
+                  (> (line-end-position) open))
+        (setq found (and (cfengine-ts-mode--code-line-p)
+                         (> (point) (save-excursion (goto-char open)
+                                                    (line-end-position))))))
+      (or (not found)
+          (progn (back-to-indentation)
+                 (or (looking-at-p cfengine-ts-mode--section-re)
+                     (looking-at-p cfengine-ts-mode--class-guard-re)
+                     (eq (char-before (cfengine-ts-mode--code-end)) ?\;)))))))
+
+(defun cfengine-ts-mode--annotate (table)
+  "Return an annotation function for candidates from syntax TABLE."
+  (lambda (candidate)
+    (when-let* ((entry (cdr (assq (intern candidate) table)))
+                (type (cdr (assq 'type entry))))
+      (concat " " type
+              (unless (equal (cdr (assq 'status entry)) "normal")
+                (concat " (" (cdr (assq 'status entry)) ")"))))))
+
+(defun cfengine-ts-mode--syntax-completion-at-point ()
+  "Complete promise types, attributes and attribute values at point."
+  (when-let* ((context (and (not (nth 4 (syntax-ppss)))
+                            (cfengine-ts-mode--context))))
+    (let* ((in-string (plist-get context :string))
+           (beg (save-excursion
+                  (if in-string
+                      (goto-char (1+ (nth 8 (syntax-ppss))))
+                    (skip-syntax-backward "w_"))
+                  (point)))
+           (end (if in-string
+                    (point)
+                  (save-excursion (skip-syntax-forward "w_") (point))))
+           (attribute (plist-get context :attribute)))
+      (cond
+       ;; A value.
+       (attribute
+        (when-let* ((entry (cfengine-ts-mode--attribute context attribute))
+                    (candidates (cfengine-ts-mode--value-candidates
+                                 entry attribute)))
+          (list beg end candidates :exclusive 'no)))
+       (in-string nil)
+       ((/= (plist-get context :depth) 1) nil)
+       ;; A section at the start of a statement in a bundle.
+       ((and (equal (car (plist-get context :block)) "bundle")
+             (save-excursion (goto-char beg)
+                             (looking-back "^[ \t]*" (line-beginning-position)))
+             (save-excursion (goto-char beg)
+                             (cfengine-ts-mode--statement-start-p
+                              (car (nth 9 (syntax-ppss)))))
+             (not (looking-at-p "[[:alnum:]_]*:")))
+        (let ((types (cfengine-ts-mode--syntax
+                      'bundleTypes (nth 1 (plist-get context :block))
+                      'promiseTypes)))
+          (when types
+            (list beg end (append types nil)
+                  :exclusive 'no
+                  :annotation-function (lambda (_) " promise type")
+                  :exit-function
+                  (lambda (_ status)
+                    (when (eq status 'finished)
+                      (unless (eq (char-after) ?:) (insert ":"))
+                      (indent-according-to-mode)))))))
+       ;; An attribute.
+       (t
+        (when-let* ((table (cfengine-ts-mode--attributes context)))
+          (list beg end (mapcar (lambda (a) (symbol-name (car a))) table)
+                :exclusive 'no
+                :annotation-function (cfengine-ts-mode--annotate table)
+                :exit-function
+                (lambda (_ status)
+                  (when (and (eq status 'finished)
+                             (not (looking-at-p "[ \t]*=>")))
+                    (insert " => "))))))))))
+
+(defun cfengine-ts-mode--describe-attribute (name entry)
+  "Return a one-line description of attribute NAME from syntax ENTRY."
+  (let ((type (cdr (assq 'type entry)))
+        (range (cdr (assq 'range entry)))
+        (status (cdr (assq 'status entry))))
+    (concat (propertize name 'face 'font-lock-property-name-face) ": "
+            (propertize type 'face 'font-lock-type-face)
+            (cond ((equal type "body") (concat " " name))
+                  ((equal type "bundle")
+                   (if (member name '("edit_line" "edit_xml"))
+                       (concat " " name)
+                     " agent"))
+                  ((and range (not (string-empty-p range)))
+                   (format " (%s)" range)))
+            (unless (equal status "normal") (format " [%s]" status)))))
+
+(defun cfengine-ts-mode--eldoc-attribute (&rest _)
+  "Describe the attribute at point, or the one whose value point is in.
+For `eldoc-documentation-functions'."
+  (when-let* ((context (and (not (nth 4 (syntax-ppss)))
+                            (cfengine-ts-mode--context)))
+              (name (or (plist-get context :attribute)
+                        (and (not (plist-get context :string))
+                             (save-excursion
+                               (skip-syntax-backward "w_")
+                               (when (looking-at
+                                      "\\([[:alnum:]_]+\\)[ \t]*=>")
+                                 (match-string-no-properties 1))))))
+              (entry (cfengine-ts-mode--attribute context name)))
+    (cfengine-ts-mode--describe-attribute name entry)))
+
 (defvar-keymap cfengine-ts-mode-map
   :doc "Keymap for `cfengine-ts-mode'."
   "C-c C-f" #'cfengine-ts-mode-format-buffer
@@ -878,8 +1136,13 @@ See also `cfengine-ts-mode-lint-arguments'."
                           (shell-quote-argument buffer-file-name)))))
   (add-hook 'eldoc-documentation-functions
             #'cfengine3-documentation-function nil t)
+  (add-hook 'eldoc-documentation-functions
+            #'cfengine-ts-mode--eldoc-attribute nil t)
   (add-hook 'completion-at-point-functions
             #'cfengine-ts-mode--completion-at-point nil t)
+  ;; Added last, so it runs first; function names come after.
+  (add-hook 'completion-at-point-functions
+            #'cfengine-ts-mode--syntax-completion-at-point nil t)
   (add-hook 'flymake-diagnostic-functions #'cfengine-ts-mode-flymake nil t)
   (add-hook 'before-save-hook #'cfengine-ts-mode--format-before-save nil t)
   ;; Reindent as section headers, class guards and statements are typed.

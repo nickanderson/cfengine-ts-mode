@@ -311,6 +311,25 @@ typed and the tree is incomplete throughout."
                            '((:error "nosuchfn") (:warning "ifvarclass")))))
         (delete-directory root t)))))
 
+(ert-deftest cfengine-ts-mode-lint-context-skips-lock-files ()
+  (let ((root (make-temp-file "cfengine-ts-mode-policy" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "promises.cf" root)
+            (insert "bundle agent other\n{\n}\n"))
+          (with-temp-file (expand-file-name "lib.cf" root)
+            (insert "body perms mog(m, o, g)\n{\n}\n"))
+          ;; What Emacs leaves while main.cf has unsaved changes.
+          (make-symbolic-link "user@host.1234:1" (expand-file-name ".#main.cf" root))
+          (with-temp-buffer
+            (setq buffer-file-name (expand-file-name "main.cf" root))
+            (should (equal (sort (mapcar #'file-name-nondirectory
+                                         (cfengine-ts-mode--lint-context))
+                                 #'string<)
+                           '("lib.cf" "promises.cf")))
+            (setq buffer-file-name nil)))
+      (delete-directory root t))))
+
 (ert-deftest cfengine-ts-mode-lint-falls-back-when-context-breaks ()
   (cfengine-ts-mode-tests--with-cli
     (let ((root (make-temp-file "cfengine-ts-mode-policy" t)))
@@ -354,6 +373,107 @@ typed and the tree is incomplete throughout."
       (goto-char (point-min))
       (search-forward (car case))
       (should (eq (get-text-property (1- (point)) 'face) (cdr case))))))
+
+;;; Completion and ElDoc from the cf-promises syntax
+
+(defmacro cfengine-ts-mode-tests--with-syntax (&rest body)
+  "Run BODY if `cf-promises' provides promise type syntax, else skip."
+  (declare (indent 0))
+  `(progn
+     (skip-unless (cfengine-ts-mode--syntax 'promiseTypes))
+     ,@body))
+
+(defconst cfengine-ts-mode-tests--definitions
+  (concat "body perms m(mode)\n{\n  mode => \"$(mode)\";\n}\n"
+          "bundle edit_line my_lines\n{\n}\n"
+          "bundle agent helper\n{\n}\n"))
+
+(defun cfengine-ts-mode-tests--complete (text)
+  "Return (PREFIX CANDIDATES CAPF) at the | in TEXT, a policy snippet."
+  (with-temp-buffer
+    (insert cfengine-ts-mode-tests--definitions text)
+    (cfengine-ts-mode)
+    (search-backward "|")
+    (delete-char 1)
+    (let ((capf (run-hook-wrapped 'completion-at-point-functions
+                                  (lambda (f) (and (functionp f) (funcall f))))))
+      (when capf
+        (let ((prefix (buffer-substring-no-properties (nth 0 capf) (nth 1 capf))))
+          (list prefix (all-completions prefix (nth 2 capf)) capf))))))
+
+(ert-deftest cfengine-ts-mode-completes-promise-types ()
+  (cfengine-ts-mode-tests--with-syntax
+    (should (equal (nth 1 (cfengine-ts-mode-tests--complete
+                           "bundle agent main\n{\n  vars:\n    \"x\" string => \"a\";\n  fi|\n}\n"))
+                   '("files")))
+    ;; Only the promise types of the bundle's type.
+    (should (equal (nth 1 (cfengine-ts-mode-tests--complete
+                           "bundle edit_line e\n{\n  ins|\n}\n"))
+                   '("insert_lines")))
+    (should-not (member "insert_lines"
+                        (nth 1 (cfengine-ts-mode-tests--complete
+                                "bundle agent main\n{\n  ins|\n}\n"))))))
+
+(ert-deftest cfengine-ts-mode-completes-attributes ()
+  (cfengine-ts-mode-tests--with-syntax
+    (should (equal (nth 1 (cfengine-ts-mode-tests--complete
+                           "bundle agent main\n{\n  files:\n    \"/tmp/x\"\n      cre|\n}\n"))
+                   '("create")))
+    (should (equal (nth 1 (cfengine-ts-mode-tests--complete
+                           "bundle agent main\n{\n  files:\n    \"/tmp/x\" cre|\n}\n"))
+                   '("create")))
+    ;; In a body, the body type's attributes.
+    (should (equal (nth 1 (cfengine-ts-mode-tests--complete "body perms p\n{\n  mo|\n}\n"))
+                   '("mode")))))
+
+(ert-deftest cfengine-ts-mode-completes-values ()
+  (cfengine-ts-mode-tests--with-syntax
+    (dolist (case '(;; Options, inside the quotes.
+                    ("files:\n    \"/tmp/x\"\n      create => \"t|" "t" ("true"))
+                    ;; Bodies of the attribute's type, with or without arguments.
+                    ("files:\n    \"/tmp/x\"\n      perms => |" "" ("m"))
+                    ("files:\n    \"/tmp/x\"\n      perms => m|(\"0644\");" "m" ("m"))
+                    ;; Bundles of the right type.
+                    ("files:\n    \"/tmp/x\"\n      edit_line => my|" "my" ("my_lines"))
+                    ("methods:\n    \"a\" usebundle => \"hel|\";" "hel" ("helper"))))
+      (let ((result (cfengine-ts-mode-tests--complete
+                     (concat "bundle agent main\n{\n  " (car case) "\n}\n"))))
+        (should (equal (list (nth 0 result) (nth 1 result)) (cdr case)))))))
+
+(ert-deftest cfengine-ts-mode-completion-inserts-punctuation ()
+  (cfengine-ts-mode-tests--with-syntax
+    (with-temp-buffer
+      (insert "bundle agent main\n{\n  fi\n}\n")
+      (cfengine-ts-mode)
+      (goto-char (point-min))
+      (search-forward "  fi")
+      (let ((capf (cfengine-ts-mode--syntax-completion-at-point)))
+        (insert "les")
+        (funcall (plist-get (nthcdr 3 capf) :exit-function) "files" 'finished))
+      (should (equal (buffer-substring (line-beginning-position) (line-end-position))
+                     "  files:"))
+      (insert "\n\"/tmp/x\"\ncr")
+      (let ((capf (cfengine-ts-mode--syntax-completion-at-point)))
+        (insert "eate")
+        (funcall (plist-get (nthcdr 3 capf) :exit-function) "create" 'finished))
+      (should (looking-back "create => " (line-beginning-position))))))
+
+(ert-deftest cfengine-ts-mode-eldoc-attributes ()
+  (cfengine-ts-mode-tests--with-syntax
+    (with-temp-buffer
+      (insert "bundle agent main\n{\n  files:\n    \"/tmp/x\"\n"
+              "      create => \"true\",\n      perms => m(\"0644\");\n}\n")
+      (cfengine-ts-mode)
+      (goto-char (point-min))
+      ;; On the name, and in the value.
+      (search-forward "crea")
+      (should (equal (substring-no-properties (cfengine-ts-mode--eldoc-attribute))
+                     "create: option (true,false,yes,no,on,off)"))
+      (search-forward "tr")
+      (should (string-prefix-p "create:" (cfengine-ts-mode--eldoc-attribute)))
+      (search-forward "m(")
+      (should (equal (substring-no-properties (cfengine-ts-mode--eldoc-attribute))
+                     "perms: body perms")))))
 
 ;;; Navigation and outline
 
