@@ -98,7 +98,7 @@ bundle, body or promise block.  Intended for `magic-mode-alist'."
     (and buffer-file-name
          (string-match-p "\\.cf\\(?:\\.sub\\)?\\'" buffer-file-name)
          (re-search-forward
-          "^[ \t]*\\(?:bundle\\|body\\|promise\\)[ \t]+[[:alnum:]_]+[ \t]+[[:alnum:]_.:]+"
+          "^[ \t]*\\(?:bundle\\|body\\|promise\\)[ \t]+[[:alnum:]_]+[ \t]+[[:alnum:]_]+"
           nil t))))
 
 ;;;###autoload
