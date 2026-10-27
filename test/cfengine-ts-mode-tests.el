@@ -31,10 +31,13 @@
     (let ((expected (buffer-string)))
       (goto-char (point-min))
       ;; Leave multi-line string continuations alone; their leading
-      ;; whitespace is part of the string.
-      (while (re-search-forward "^[ \t]+" nil t)
-        (unless (nth 3 (syntax-ppss (match-beginning 0)))
-          (replace-match "")))
+      ;; whitespace is part of the string.  Step by line rather than
+      ;; `replace-match': `syntax-ppss' runs `syntax-propertize', which
+      ;; clobbers the match data.
+      (while (not (eobp))
+        (unless (nth 3 (syntax-ppss))
+          (delete-horizontal-space t))
+        (forward-line 1))
       (indent-region (point-min) (point-max))
       (should (equal (buffer-string) expected)))))
 
