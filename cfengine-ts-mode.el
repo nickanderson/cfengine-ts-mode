@@ -862,6 +862,61 @@ See also `cfengine-ts-mode-lint-arguments'."
                                   (cfengine-ts-mode--lint-context)
                                   report-fn)))
 
+;;; Flycheck
+
+(declare-function flycheck-define-generic-checker "ext:flycheck")
+(declare-function flycheck-error-new-at-pos "ext:flycheck")
+(defvar flycheck-checkers)
+
+(defun cfengine-ts-mode--flycheck-start (checker callback)
+  "Start `cfengine lint' for Flycheck CHECKER, reporting to CALLBACK.
+Runs the same check as `cfengine-ts-mode-flymake' and converts the
+results."
+  (let ((source (current-buffer))
+        (file (make-temp-file "cfengine-lint" nil ".cf"))
+        (coding-system-for-write 'utf-8))
+    (save-restriction
+      (widen)
+      (write-region nil nil file nil 'silent))
+    (cfengine-ts-mode--lint-start
+     source file (cfengine-ts-mode--lint-context)
+     (lambda (diagnostics)
+       (funcall callback 'finished
+                (with-current-buffer source
+                  (mapcar
+                   (lambda (d)
+                     (flycheck-error-new-at-pos
+                      (flymake-diagnostic-beg d)
+                      (pcase (flymake-diagnostic-type d)
+                        (:error 'error) (:warning 'warning) (_ 'info))
+                      (flymake-diagnostic-text d)
+                      :end-pos (flymake-diagnostic-end d)
+                      :checker checker))
+                   diagnostics)))))
+    cfengine-ts-mode--lint-process))
+
+(defun cfengine-ts-mode--flycheck-interrupt (_checker process)
+  "Stop the `cfengine lint' PROCESS of a Flycheck check."
+  (when (process-live-p process)
+    (kill-process process)))
+
+;;;###autoload
+(defun cfengine-ts-mode-flycheck-setup ()
+  "Define and register the `cfengine-lint' Flycheck checker.
+It runs the same check as `cfengine-ts-mode-flymake'.  This happens by
+itself when `cfengine-ts-mode' starts with Flycheck already loaded;
+otherwise call it once, for example from `flycheck-mode-hook'."
+  (require 'flycheck)
+  (flycheck-define-generic-checker 'cfengine-lint
+    "CFEngine policy checker using `cfengine lint'.
+See `cfengine-ts-mode-flymake' for how the rest of the policy is used."
+    :start #'cfengine-ts-mode--flycheck-start
+    :interrupt #'cfengine-ts-mode--flycheck-interrupt
+    :modes '(cfengine-ts-mode)
+    :predicate (lambda ()
+                 (executable-find cfengine-ts-mode-cfengine-program)))
+  (add-to-list 'flycheck-checkers 'cfengine-lint))
+
 ;;; Completion and ElDoc for promise types, attributes and values
 ;;
 ;; These read the syntax description from `cf-promises' (see
@@ -1228,6 +1283,8 @@ See `cfengine-ts-mode-docs-url' and `cfengine-ts-mode-docs-version'."
   (add-hook 'completion-at-point-functions
             #'cfengine-ts-mode--syntax-completion-at-point nil t)
   (add-hook 'flymake-diagnostic-functions #'cfengine-ts-mode-flymake nil t)
+  (when (featurep 'flycheck)
+    (cfengine-ts-mode-flycheck-setup))
   (add-hook 'before-save-hook #'cfengine-ts-mode--format-before-save nil t)
   ;; Reindent as section headers, class guards and statements are typed.
   (setq-local electric-indent-chars

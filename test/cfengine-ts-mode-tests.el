@@ -311,6 +311,28 @@ typed and the tree is incomplete throughout."
                            '((:error "nosuchfn") (:warning "ifvarclass")))))
         (delete-directory root t)))))
 
+(ert-deftest cfengine-ts-mode-flycheck ()
+  "The Flycheck checker reports what the Flymake backend does."
+  (cfengine-ts-mode-tests--with-cli
+    (skip-unless (require 'flycheck nil t))
+    (with-temp-buffer
+      (insert cfengine-ts-mode-tests--lint-policy)
+      (setq buffer-file-name (expand-file-name "main.cf" temporary-file-directory))
+      (cfengine-ts-mode)
+      (should (eq (flycheck-get-checker-for-buffer) 'cfengine-lint))
+      (flycheck-mode 1)
+      (flycheck-buffer)
+      (with-timeout (60 (error "Flycheck timed out"))
+        (while (flycheck-running-p) (accept-process-output nil 0.1)))
+      (should (equal (mapcar (lambda (e)
+                               (list (flycheck-error-level e)
+                                     (flycheck-error-line e)
+                                     (flycheck-error-column e)))
+                             flycheck-current-errors)
+                     '((error 7 19))))
+      (set-buffer-modified-p nil)
+      (setq buffer-file-name nil))))
+
 (ert-deftest cfengine-ts-mode-lint-context-skips-lock-files ()
   (let ((root (make-temp-file "cfengine-ts-mode-policy" t)))
     (unwind-protect

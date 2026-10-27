@@ -19,6 +19,7 @@ It uses [[https://github.com/olehermanse/tree-sitter-cfengine][tree-sitter-cfeng
 - ~M-x cfengine-ts-mode-format-buffer~ formats with ~cfengine format~, replacing only what changed so point and marks stay put. Set ~cfengine-ts-mode-format-on-save~ to do it on every save; a file that doesn't parse is still saved, unformatted
 - ~M-x cfengine-ts-mode-format-region~ formats the bundle, body and promise blocks a region touches, or the block at point without an active region. ~cfengine format~ only accepts complete policy, so it works on whole blocks; a block formatted alone comes out the same as when its whole file is formatted. To fix only indentation in any region, use ~indent-region~ (~C-M-\~)
 - A Flymake backend for ~cfengine lint~; turn on ~flymake-mode~ to use it. Inside a policy tree (a parent directory with =promises.cf= or =promises.cf.in=, as in masterfiles), the buffer is linted with the tree's other policy files in strict mode, so bundles and bodies from the standard library resolve and deprecations and naming conventions are reported. Elsewhere it is linted on its own with strict mode off
+- The same check as a Flycheck checker, ~cfengine-lint~, registered when the mode starts with Flycheck loaded (call ~cfengine-ts-mode-flycheck-setup~ if Flycheck loads later, for example from ~flycheck-mode-hook~)
 - Registered as a child of ~cfengine3-mode~, so its hooks, snippets and keybindings still apply
 
 * Installation

@@ -5,7 +5,7 @@ TREESIT_DIR ?= $(CURDIR)/.treesit
 BATCH = $(EMACS) -Q --batch -L . -L test --eval "(setq load-prefer-newer t)" \
 	--eval '(add-to-list (quote treesit-extra-load-path) "$(TREESIT_DIR)")'
 
-.PHONY: all compile checkdoc lint test corpus grammar clean
+.PHONY: all compile checkdoc deps lint test corpus grammar clean
 
 all: compile checkdoc lint test
 
@@ -17,19 +17,23 @@ checkdoc:
 	$(BATCH) --eval '(checkdoc-file "cfengine-ts-mode.el")' \
 	  --eval '(when (get-buffer "*Warnings*") (kill-emacs 1))'
 
-# package-lint from MELPA, installed into .elpa/ on first use.
+# Development packages from MELPA (package-lint, and flycheck for its
+# test), installed into .elpa/ on first use.
 ELPA_DIR = $(CURDIR)/.elpa
-lint:
-	$(EMACS) -Q --batch \
-	  --eval '(setq package-user-dir "$(ELPA_DIR)")' \
-	  --eval '(require (quote package))' \
+ELPA = --eval '(setq package-user-dir "$(ELPA_DIR)")' \
+       --eval '(require (quote package))' --eval '(package-initialize)'
+
+deps:
+	$(EMACS) -Q --batch $(ELPA) \
 	  --eval '(add-to-list (quote package-archives) (quote ("melpa" . "https://melpa.org/packages/")) t)' \
-	  --eval '(package-initialize)' \
-	  --eval '(unless (package-installed-p (quote package-lint)) (package-refresh-contents) (package-install (quote package-lint)))' \
-	  -l package-lint -f package-lint-batch-and-exit cfengine-ts-mode.el
+	  --eval '(dolist (p (quote (package-lint flycheck))) (unless (package-installed-p p) (unless package-archive-contents (package-refresh-contents)) (package-install p)))'
+
+lint: deps
+	$(EMACS) -Q --batch $(ELPA) -l package-lint \
+	  -f package-lint-batch-and-exit cfengine-ts-mode.el
 
 test:
-	$(BATCH) -l test/cfengine-ts-mode-tests.el -f ert-run-tests-batch-and-exit
+	$(BATCH) $(ELPA) -l test/cfengine-ts-mode-tests.el -f ert-run-tests-batch-and-exit
 
 # Reindent every policy file in a masterfiles checkout, formatted first by
 # `cfengine format', and compare.  Templates (.cf.in) are skipped.
