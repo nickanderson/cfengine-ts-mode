@@ -132,6 +132,66 @@
           (cfengine-ts-mode--format-before-save))
         (should (equal (buffer-string) broken))))))
 
+(defconst cfengine-ts-mode-tests--three-blocks
+  (concat "# header\n"
+          "bundle agent one\n{\nvars:\n\"a\"   string => \"1\";\n}\n"
+          "\n# between\n"
+          "bundle agent two\n{\nvars:\n\"b\"   string => \"2\";\n}\n"
+          "\n"
+          "bundle agent three\n{\nvars:\n\"c\"   string => \"3\";\n}\n"))
+
+(defun cfengine-ts-mode-tests--block (n)
+  "Return bundle N, messy or formatted, as in the three-blocks policy."
+  (format "bundle agent %s\n{\n  vars:\n    \"%s\" string => \"%d\";\n}"
+          (nth (1- n) '("one" "two" "three")) (nth (1- n) '("a" "b" "c")) n))
+
+(ert-deftest cfengine-ts-mode-format-region-whole-blocks ()
+  (cfengine-ts-mode-tests--with-cli
+    (with-temp-buffer
+      (insert cfengine-ts-mode-tests--three-blocks)
+      (cfengine-ts-mode)
+      ;; From inside block one to inside block two.
+      (let ((beg (progn (goto-char (point-min)) (search-forward "\"a\"")))
+            (end (progn (search-forward "\"b\"") (point))))
+        (cfengine-ts-mode-format-region beg end))
+      (should (equal (buffer-string)
+                     (concat "# header\n"
+                             (cfengine-ts-mode-tests--block 1) "\n"
+                             "\n# between\n"
+                             (cfengine-ts-mode-tests--block 2) "\n"
+                             "\n"
+                             "bundle agent three\n{\nvars:\n\"c\"   string => \"3\";\n}\n"))))))
+
+(ert-deftest cfengine-ts-mode-format-region-block-at-point ()
+  (cfengine-ts-mode-tests--with-cli
+    (with-temp-buffer
+      (insert cfengine-ts-mode-tests--three-blocks)
+      (cfengine-ts-mode)
+      (goto-char (point-min))
+      (search-forward "\"b\"   string")
+      (call-interactively #'cfengine-ts-mode-format-region)
+      ;; Point stays on the same word.
+      (should (looking-back "string" (line-beginning-position)))
+      (should (string-search (cfengine-ts-mode-tests--block 2) (buffer-string)))
+      (should (string-search "\"a\"   string" (buffer-string)))
+      (should (string-search "\"c\"   string" (buffer-string)))
+      ;; Between blocks there is nothing to format.
+      (goto-char (point-min))
+      (search-forward "# between")
+      (should-error (call-interactively #'cfengine-ts-mode-format-region)
+                    :type 'user-error))))
+
+(ert-deftest cfengine-ts-mode-format-region-all-or-nothing ()
+  (cfengine-ts-mode-tests--with-cli
+    (with-temp-buffer
+      (let ((text (concat "bundle agent one\n{\nvars:\n\"a\"   string => \"1\";\n}\n"
+                          "bundle agent two\n{\nvars:\n\"b\" string => {{ \"2\";\n}\n")))
+        (insert text)
+        (cfengine-ts-mode)
+        (should-error (cfengine-ts-mode-format-region (point-min) (point-max))
+                      :type 'user-error)
+        (should (equal (buffer-string) text))))))
+
 ;;; Linting
 
 (ert-deftest cfengine-ts-mode-lint-parses-output ()

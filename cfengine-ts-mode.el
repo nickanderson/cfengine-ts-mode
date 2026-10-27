@@ -368,31 +368,89 @@ comment stays with the block above it."
 
 ;;; Formatting
 
+(defun cfengine-ts-mode--format-into (out &optional text)
+  "Run `cfengine format' on TEXT, or on the whole buffer, into buffer OUT.
+Signal a `user-error' with the formatter's message if it fails."
+  (let ((coding-system-for-read 'utf-8)
+        (coding-system-for-write 'utf-8))
+    (save-restriction
+      (widen)
+      (unless (eql 0 (call-process-region
+                      text nil cfengine-ts-mode-cfengine-program
+                      nil (list out nil) nil "format" "-"))
+        (user-error "Formatting failed: %s"
+                    (with-current-buffer out (string-trim (buffer-string))))))))
+
+(defun cfengine-ts-mode--replace-with (beg end out)
+  "Replace BEG..END with the contents of buffer OUT, keeping what's equal.
+Only the differing parts change, so point and marks are kept."
+  (save-restriction
+    (narrow-to-region beg end)
+    (unless (zerop (compare-buffer-substrings nil nil nil out nil nil))
+      ;; Emacs 31 takes a buffer here and obsoletes the Emacs 30 way.
+      (if (>= emacs-major-version 31)
+          (replace-region-contents (point-min) (point-max) out)
+        (with-no-warnings (replace-buffer-contents out))))))
+
 (defun cfengine-ts-mode-format-buffer ()
   "Format the buffer with `cfengine format'.
 Only the changed regions are replaced, so point and marks are kept.
 If the policy can't be parsed, the buffer is left alone."
   (interactive)
-  (let ((out (generate-new-buffer " *cfengine format*" t))
-        (coding-system-for-read 'utf-8)
-        (coding-system-for-write 'utf-8))
+  (let ((out (generate-new-buffer " *cfengine format*" t)))
     (unwind-protect
         (save-restriction
           (widen)
-          (let ((status (call-process-region
-                         nil nil cfengine-ts-mode-cfengine-program
-                         nil (list out nil) nil "format" "-")))
-            (unless (eql status 0)
-              (user-error "Formatting failed: %s"
-                          (with-current-buffer out
-                            (string-trim (buffer-string)))))
-            (unless (zerop (compare-buffer-substrings nil nil nil out nil nil))
-              ;; Emacs 31 takes a buffer here and obsoletes the
-              ;; Emacs 30 way.
-              (if (>= emacs-major-version 31)
-                  (replace-region-contents (point-min) (point-max) out)
-                (with-no-warnings (replace-buffer-contents out))))))
+          (cfengine-ts-mode--format-into out)
+          (cfengine-ts-mode--replace-with (point-min) (point-max) out))
       (kill-buffer out))))
+
+(defun cfengine-ts-mode--blocks-in (beg end)
+  "Return the top-level bundle, body and promise blocks touching BEG..END.
+When BEG equals END, return the block containing it, if any."
+  (seq-filter
+   (lambda (node)
+     (and (member (treesit-node-type node)
+                  '("bundle_block" "body_block" "promise_block"))
+          (if (= beg end)
+              (<= (treesit-node-start node) beg (treesit-node-end node))
+            (and (< (treesit-node-start node) end)
+                 (> (treesit-node-end node) beg)))))
+   (treesit-node-children (treesit-buffer-root-node 'cfengine) t)))
+
+(defun cfengine-ts-mode-format-region (beg end)
+  "Format the blocks between BEG and END with `cfengine format'.
+`cfengine format' only accepts complete policy, so the region grows to
+the whole bundle, body and promise blocks it touches; text between
+blocks is left alone.  Interactively, without an active region, format
+the block at point.  If any block can't be parsed, nothing changes."
+  (interactive (if (use-region-p)
+                   (list (region-beginning) (region-end))
+                 (list (point) (point))))
+  (let ((blocks (cfengine-ts-mode--blocks-in beg end))
+        formatted)
+    (unless blocks
+      (user-error "No bundle, body or promise block here"))
+    (unwind-protect
+        (progn
+          ;; Format every block before changing any.
+          (dolist (node blocks)
+            (let ((out (generate-new-buffer " *cfengine format*" t)))
+              (push (list (treesit-node-start node) (treesit-node-end node) out)
+                    formatted)
+              (cfengine-ts-mode--format-into
+               out (concat (treesit-node-text node t) "\n"))
+              ;; The block ends at its "}", without the newline.
+              (with-current-buffer out
+                (goto-char (point-max))
+                (when (eq (char-before) ?\n)
+                  (delete-char -1)))))
+          ;; `formatted' runs last block first, so earlier positions
+          ;; stay valid as later blocks change.
+          (pcase-dolist (`(,start ,stop ,out) formatted)
+            (cfengine-ts-mode--replace-with start stop out)))
+      (pcase-dolist (`(,_ ,_ ,out) formatted)
+        (kill-buffer out)))))
 
 (defun cfengine-ts-mode--format-before-save ()
   "Format the buffer if `cfengine-ts-mode-format-on-save' is non-nil.
