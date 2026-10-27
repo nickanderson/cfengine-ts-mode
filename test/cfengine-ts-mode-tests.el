@@ -326,6 +326,62 @@
       (search-forward (car case))
       (should (eq (get-text-property (1- (point)) 'face) (cdr case))))))
 
+;;; Navigation and outline
+
+(ert-deftest cfengine-ts-mode-sentences-are-promises ()
+  (skip-unless (treesit-ready-p 'cfengine t))
+  (cfengine-ts-mode-tests--with-fixture "indent.cf"
+    (goto-char (point-min))
+    (search-forward "  vars:")
+    (forward-line 1)
+    (back-to-indentation)
+    (forward-sentence)
+    (should (looking-back "{ \"a\", \"b\", \"c\" };" (line-beginning-position)))
+    (forward-sentence)
+    (should (looking-back "join(\",\", \"list\");" (line-beginning-position)))
+    ;; In a body, attribute by attribute, ending after the ";".
+    (goto-char (point-min))
+    (search-forward "body agent control")
+    (forward-line 2)
+    (forward-sentence)
+    (should (looking-back "ifelapsed => \"1\";" (line-beginning-position)))
+    (forward-sentence)
+    (should (looking-back "maxconnections => \"10\";" (line-beginning-position)))))
+
+(ert-deftest cfengine-ts-mode-outline-blocks-and-sections ()
+  (skip-unless (treesit-ready-p 'cfengine t))
+  (require 'outline)
+  (cfengine-ts-mode-tests--with-fixture "indent.cf"
+    (outline-minor-mode 1)
+    (cl-flet ((visible-lines ()
+                (let (lines)
+                  (save-excursion
+                    (goto-char (point-min))
+                    (while (not (eobp))
+                      (unless (invisible-p (point))
+                        (push (buffer-substring (line-beginning-position)
+                                                (line-end-position))
+                              lines))
+                      (forward-line 1)))
+                  (nreverse lines))))
+      (outline-hide-sublevels 1)
+      (should (member "bundle agent main(param)" (visible-lines)))
+      (should-not (member "  vars:" (visible-lines)))
+      ;; One level down shows the sections.
+      (goto-char (point-min))
+      (search-forward "bundle agent main")
+      (outline-show-children)
+      (should (member "  vars:" (visible-lines)))
+      (should (member "  files:" (visible-lines)))
+      (should-not (member "      create => \"true\"," (visible-lines))))))
+
+(ert-deftest cfengine-ts-mode-key-bindings ()
+  (with-temp-buffer
+    (cfengine-ts-mode)
+    (should (eq (key-binding (kbd "C-c C-f")) #'cfengine-ts-mode-format-buffer))
+    (should (eq (key-binding (kbd "C-c C-r")) #'cfengine-ts-mode-format-region))
+    (should (eq (key-binding (kbd "C-c C-j")) #'cfengine3-reformat-json-string))))
+
 ;;; Activation, in a fresh Emacs that has only the generated autoloads
 
 (defun cfengine-ts-mode-tests--fresh-emacs (grammar files)

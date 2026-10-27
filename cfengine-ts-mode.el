@@ -371,6 +371,22 @@ comment stays with the block above it."
                      nil nil 1)))
     (treesit-node-text name t)))
 
+(defun cfengine-ts-mode--body-attribute-p (node)
+  "Non-nil if NODE is an attribute of a body or custom promise type block.
+In bundles, attributes belong to promises."
+  (and (equal (treesit-node-type node) "attribute")
+       (not (member (treesit-node-type (treesit-node-parent node))
+                    '("promise" "half_promise")))))
+
+(defun cfengine-ts-mode--forward-sentence (&optional arg)
+  "Move forward ARG promises, or body attributes, like `forward-sentence'.
+A body attribute's \";\" lies outside its node; step over it, so that
+point ends up after the \";\" as it does for a promise."
+  (setq arg (or arg 1))
+  (treesit-forward-sentence arg)
+  (when (and (> arg 0) (eq (char-after) ?\;))
+    (forward-char)))
+
 ;;; Formatting
 
 (defun cfengine-ts-mode--format-into (out &optional text)
@@ -665,6 +681,12 @@ See also `cfengine-ts-mode-lint-arguments'."
                                   (cfengine-ts-mode--lint-context)
                                   report-fn)))
 
+(defvar-keymap cfengine-ts-mode-map
+  :doc "Keymap for `cfengine-ts-mode'."
+  "C-c C-f" #'cfengine-ts-mode-format-buffer
+  "C-c C-r" #'cfengine-ts-mode-format-region
+  "C-c C-j" #'cfengine3-reformat-json-string)
+
 ;;;###autoload
 (define-derived-mode cfengine-ts-mode prog-mode "CFEngine3[ts]"
   "Major mode for CFEngine 3 policy, powered by tree-sitter."
@@ -701,7 +723,18 @@ See also `cfengine-ts-mode-lint-arguments'."
                 '(("Bundle" "\\`bundle_block\\'" nil nil)
                   ("Body" "\\`body_block\\'" nil nil)
                   ("Promise type" "\\`promise_block\\'" nil nil)))
-    (treesit-major-mode-setup)))
+    ;; Fold blocks, then the sections inside bundles.
+    (setq-local treesit-outline-predicate
+                (rx bos (or "bundle_block" "body_block" "promise_block"
+                            "bundle_section")
+                    eos))
+    ;; M-a and M-e move by promise, and by attribute in bodies.
+    (setq-local treesit-thing-settings
+                `((cfengine
+                   (sentence (or ,(rx bos (or "promise" "half_promise") eos)
+                                 cfengine-ts-mode--body-attribute-p)))))
+    (treesit-major-mode-setup)
+    (setq-local forward-sentence-function #'cfengine-ts-mode--forward-sentence)))
 
 (derived-mode-add-parents 'cfengine-ts-mode '(cfengine3-mode))
 

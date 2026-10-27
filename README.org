@@ -8,7 +8,9 @@ It uses [[https://github.com/olehermanse/tree-sitter-cfengine][tree-sitter-cfeng
 
 - Font lock, including ~$(var)~ and ~@(list)~ references inside strings
 - Indentation that agrees with ~cfengine format~
-- Imenu and defun navigation over bundles, bodies and custom promise types
+- Imenu and defun navigation (~C-M-a~, ~C-M-e~) over bundles, bodies and custom promise types, and ~which-function-mode~ shows the current one
+- Sentence movement (~M-a~, ~M-e~) by promise, and by attribute in bodies
+- ~outline-minor-mode~ folds blocks, and the sections (~vars:~, ~files:~, ...) inside bundles
 - Completion of built-in function names and ElDoc signatures, from =cfengine.el=. These use your installed ~cf-promises~ (~cfengine-cf-promises~), falling back to built-in data
 - Recognizes CFEngine policy by content. =.cf= is shared with Postfix and sendmail, so a =.cf=, =.cf.sub=, =.cf.in= or =.cf.sub.in= file opens as CFEngine only if it contains a ~bundle~, ~body~ or ~promise~ block header
 - Remaps ~cfengine-mode~ and ~cfengine3-mode~ when the grammar is installed, so Org src blocks in ~cfengine3~ use it too. Without the grammar, policy files open in ~cfengine3-mode~
@@ -44,6 +46,14 @@ To turn that off and decide by file name yourself, remove the entry after the pa
 ;; Then, if you want, map files by name instead:
 (add-to-list 'auto-mode-alist '("/masterfiles/.*\\.cf\\'" . cfengine-ts-mode))
 #+end_src
+
+* Key bindings
+
+| Key       | Command                                                                |
+|-----------+------------------------------------------------------------------------|
+| ~C-c C-f~ | ~cfengine-ts-mode-format-buffer~                                       |
+| ~C-c C-r~ | ~cfengine-ts-mode-format-region~ (the block at point without a region) |
+| ~C-c C-j~ | ~cfengine3-reformat-json-string~                                       |
 
 * Customization
 
