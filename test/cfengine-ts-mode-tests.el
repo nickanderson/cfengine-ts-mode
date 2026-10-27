@@ -475,6 +475,42 @@ typed and the tree is incomplete throughout."
       (should (equal (substring-no-properties (cfengine-ts-mode--eldoc-attribute))
                      "perms: body perms")))))
 
+(ert-deftest cfengine-ts-mode-docs-urls ()
+  "Each URL was checked against docs.cfengine.com, anchor included."
+  (cfengine-ts-mode-tests--with-syntax
+    (with-temp-buffer
+      (insert "body agent control\n{\n  ifelapsed => \"1\";\n}\n"
+              "body action a\n{\n  ifelapsed => \"1\";\n}\n"
+              "body perms p\n{\n  mode => \"0644\";\n}\n"
+              "bundle agent main\n{\n  files:\n    \"/tmp/x\"\n"
+              "      create => \"true\",\n      perms => m(\"0644\"),\n"
+              "      if => \"linux\";\n"
+              "  vars:\n    \"j\" string => join(\",\", \"l\");\n}\n")
+      (cfengine-ts-mode)
+      (goto-char (point-min))
+      (let ((cfengine-ts-mode-docs-version "lts"))
+        (dolist (case '(;; Control body: the component's page.
+                        ("ifelapsed" "components/cf-agent/#ifelapsed")
+                        ;; A body used by every promise type.
+                        ("ifelapsed" "promise-types/#ifelapsed")
+                        ;; A body's page is its promise type's.
+                        ("mode" "promise-types/files/#mode")
+                        ("files" "promise-types/files/")
+                        ("create" "promise-types/files/#create")
+                        ;; In a value: its attribute.
+                        ("tru" "promise-types/files/#create")
+                        ("perms" "promise-types/files/#perms")
+                        ("if =>" "promise-types/#if")
+                        ("join" "functions/join/")))
+          (search-forward (car case))
+          (goto-char (1+ (match-beginning 0)))
+          (should (equal (cfengine-ts-mode-docs-url)
+                         (concat "https://docs.cfengine.com/docs/lts/reference/"
+                                 (cadr case)))))
+        (goto-char (point-min))
+        (should (equal (cfengine-ts-mode-docs-url)
+                       "https://docs.cfengine.com/docs/lts/reference/"))))))
+
 ;;; Navigation and outline
 
 (ert-deftest cfengine-ts-mode-sentences-are-promises ()
@@ -529,7 +565,8 @@ typed and the tree is incomplete throughout."
     (cfengine-ts-mode)
     (should (eq (key-binding (kbd "C-c C-f")) #'cfengine-ts-mode-format-buffer))
     (should (eq (key-binding (kbd "C-c C-r")) #'cfengine-ts-mode-format-region))
-    (should (eq (key-binding (kbd "C-c C-j")) #'cfengine3-reformat-json-string))))
+    (should (eq (key-binding (kbd "C-c C-j")) #'cfengine3-reformat-json-string))
+    (should (eq (key-binding (kbd "C-c C-d")) #'cfengine-ts-mode-browse-docs))))
 
 ;;; Activation, in a fresh Emacs that has only the generated autoloads
 

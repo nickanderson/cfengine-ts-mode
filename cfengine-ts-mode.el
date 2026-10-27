@@ -1115,11 +1115,95 @@ For `eldoc-documentation-functions'."
               (entry (cfengine-ts-mode--attribute context name)))
     (cfengine-ts-mode--describe-attribute name entry)))
 
+;;; Reference documentation
+
+(defcustom cfengine-ts-mode-docs-version "lts"
+  "Version of the CFEngine documentation to open.
+\"lts\", \"master\", or a published version such as \"3.24\"."
+  :type 'string
+  :safe #'stringp)
+
+(defconst cfengine-ts-mode--control-body-pages
+  '(("agent" . "components/cf-agent/")
+    ("server" . "components/cf-serverd/")
+    ("executor" . "components/cf-execd/")
+    ("monitor" . "components/cf-monitord/")
+    ("runagent" . "components/cf-runagent/")
+    ("hub" . "components/cf-hub/")
+    ("common" . "components/")
+    ("file" . "components/"))
+  "Reference pages documenting the attributes of control bodies.")
+
+(defun cfengine-ts-mode--attribute-page (context name)
+  "Return the reference page, relative, that documents attribute NAME.
+CONTEXT is from `cfengine-ts-mode--context'.  Attributes allowed in
+every promise type are documented on the promise types page; a body's
+attributes on the page of the promise type that uses the body, or of the
+component for control bodies."
+  (pcase (plist-get context :block)
+    (`("bundle" ,_)
+     (when-let* ((section (plist-get context :section))
+                 (entry (cfengine-ts-mode--attribute context name)))
+       (if (equal (cdr (assq 'visibility entry)) "global")
+           "promise-types/"
+         (format "promise-types/%s/" section))))
+    (`("body" ,type)
+     (or (cdr (assoc type cfengine-ts-mode--control-body-pages))
+         (catch 'page
+           (dolist (promise-type (cfengine-ts-mode--syntax 'promiseTypes))
+             (when-let* ((entry (cdr (assq (intern type)
+                                           (cdr (assq 'attributes
+                                                      (cdr promise-type)))))))
+               (when (equal (cdr (assq 'type entry)) "body")
+                 (throw 'page
+                        (if (equal (cdr (assq 'visibility entry)) "global")
+                            "promise-types/"
+                          (format "promise-types/%s/" (car promise-type))))))))))))
+
+(defun cfengine-ts-mode-docs-url ()
+  "Return the reference documentation URL for the thing at point.
+That is the function, attribute or promise type at point, or the
+attribute whose value point is in; otherwise the reference index."
+  (let* ((context (cfengine-ts-mode--context))
+         (word (save-excursion
+                 (skip-syntax-backward "w_")
+                 (and (looking-at "[[:alnum:]_]+")
+                      (match-string-no-properties 0))))
+         (after (save-excursion (skip-syntax-forward "w_")
+                                (skip-chars-forward " \t")
+                                (char-after)))
+         (page
+          (cond
+           ((and word (eq after ?\()
+                 (assq (intern word) (cfengine-ts-mode--syntax 'functions)))
+            (format "functions/%s/" word))
+           ((and word context (not (plist-get context :string))
+                 (save-excursion (skip-syntax-forward "w_")
+                                 (looking-at-p "[ \t]*=>")))
+            (when-let* ((base (cfengine-ts-mode--attribute-page context word)))
+              (concat base "#" word)))
+           ((and word (eq after ?:)
+                 (assq (intern word) (cfengine-ts-mode--syntax 'promiseTypes)))
+            (format "promise-types/%s/" word))
+           ((plist-get context :attribute)
+            (let ((name (plist-get context :attribute)))
+              (when-let* ((base (cfengine-ts-mode--attribute-page context name)))
+                (concat base "#" name)))))))
+    (format "https://docs.cfengine.com/docs/%s/reference/%s"
+            cfengine-ts-mode-docs-version (or page ""))))
+
+(defun cfengine-ts-mode-browse-docs ()
+  "Open the reference documentation for the thing at point.
+See `cfengine-ts-mode-docs-url' and `cfengine-ts-mode-docs-version'."
+  (interactive)
+  (browse-url (cfengine-ts-mode-docs-url)))
+
 (defvar-keymap cfengine-ts-mode-map
   :doc "Keymap for `cfengine-ts-mode'."
   "C-c C-f" #'cfengine-ts-mode-format-buffer
   "C-c C-r" #'cfengine-ts-mode-format-region
-  "C-c C-j" #'cfengine3-reformat-json-string)
+  "C-c C-j" #'cfengine3-reformat-json-string
+  "C-c C-d" #'cfengine-ts-mode-browse-docs)
 
 ;;;###autoload
 (define-derived-mode cfengine-ts-mode prog-mode "CFEngine3[ts]"

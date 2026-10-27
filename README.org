@@ -50,11 +50,12 @@ To turn that off and decide by file name yourself, remove the entry after the pa
 
 * Key bindings
 
-| Key       | Command                                                                |
-|-----------+------------------------------------------------------------------------|
-| ~C-c C-f~ | ~cfengine-ts-mode-format-buffer~                                       |
-| ~C-c C-r~ | ~cfengine-ts-mode-format-region~ (the block at point without a region) |
-| ~C-c C-j~ | ~cfengine3-reformat-json-string~                                       |
+| Key       | Command                                                                                                 |
+|-----------+---------------------------------------------------------------------------------------------------------|
+| ~C-c C-f~ | ~cfengine-ts-mode-format-buffer~                                                                        |
+| ~C-c C-r~ | ~cfengine-ts-mode-format-region~ (the block at point without a region)                                  |
+| ~C-c C-j~ | ~cfengine3-reformat-json-string~                                                                        |
+| ~C-c C-d~ | ~cfengine-ts-mode-browse-docs~: the reference docs for the function, attribute or promise type at point |
 
 * Customization
 
@@ -63,6 +64,7 @@ To turn that off and decide by file name yourself, remove the entry after the pa
 - ~cfengine-ts-mode-cfengine-program~ is the CFEngine CLI to run (default ~cfengine~)
 - ~cfengine-ts-mode-format-on-save~ (default off)
 - ~cfengine-ts-mode-lint-arguments~ adds arguments to ~cfengine lint~
+- ~cfengine-ts-mode-docs-version~ is the documentation version ~C-c C-d~ opens: ~"lts"~ (default), ~"master"~ or a published version such as ~"3.24"~
 
 ** How linting picks its context
 
