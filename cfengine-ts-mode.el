@@ -94,12 +94,21 @@
   (defun cfengine-ts-mode-policy-file-p ()
     "Return non-nil if the current buffer looks like CFEngine policy.
 The file name must end in .cf or .cf.sub and the text must contain a
-bundle, body or promise block.  Intended for `magic-mode-alist'."
+bundle, body or promise block header: the keyword, a type and a name,
+then optionally a parameter list, an opening brace and a comment, and
+nothing else on the line.  Keywords are case-sensitive, as in CFEngine.
+Intended for `magic-mode-alist'."
     (and buffer-file-name
          (string-match-p "\\.cf\\(?:\\.sub\\)?\\'" buffer-file-name)
-         (re-search-forward
-          "^[ \t]*\\(?:bundle\\|body\\|promise\\)[ \t]+[[:alnum:]_]+[ \t]+[[:alnum:]_]+"
-          nil t))))
+         ;; String regexp, not `rx': this runs from the autoloads.
+         ;; The parameter list may continue on the next line.
+         (let ((case-fold-search nil))
+           (re-search-forward
+            (concat "^[ \t]*\\(?:bundle\\|body\\|promise\\)"
+                    "[ \t]+[[:alnum:]_]+[ \t]+[[:alnum:]_]+"
+                    "[ \t]*\\(?:([^)\n]*)?\\)?"
+                    "[ \t]*{?[ \t]*\\(?:#.*\\)?\r?$")
+            nil t)))))
 
 ;;;###autoload
 (add-to-list 'magic-mode-alist '(cfengine-ts-mode-policy-file-p . cfengine3-mode))

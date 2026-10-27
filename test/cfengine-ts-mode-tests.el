@@ -8,6 +8,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'cfengine-ts-mode)
 
 (defconst cfengine-ts-mode-tests--dir
@@ -59,6 +60,36 @@
     (search-forward "$(param)")
     (let ((face (get-text-property (match-beginning 0) 'face)))
       (should (memq 'font-lock-variable-use-face (ensure-list face))))))
+
+(ert-deftest cfengine-ts-mode-policy-file-p ()
+  (cl-flet ((policy-p (file text)
+              (with-temp-buffer
+                (insert text)
+                (goto-char (point-min))
+                (let ((buffer-file-name file))
+                  (and (cfengine-ts-mode-policy-file-p) t)))))
+    (dolist (line '("bundle agent main"
+                    "bundle agent main\r"
+                    "  body common control"
+                    "bundle agent main(x, y)"
+                    "bundle agent main(x,"
+                    "bundle agent main {"
+                    "bundle agent main(x) { # comment"
+                    "promise agent git"
+                    "body perms m(mode)"))
+      (should (policy-p "/x/promises.cf" (concat "# header\n" line "\n"))))
+    (dolist (line '("# bundle agent main"
+                    "bundle agent"
+                    "Body Common control"
+                    "BUNDLE agent main"
+                    "body of the message is here"
+                    "bundle agent main extra"
+                    "bundle agent my.main"
+                    "bundle agent ns:main"))
+      (should-not (policy-p "/x/promises.cf" (concat line "\n"))))
+    (should (policy-p "/x/test.cf.sub" "bundle agent main\n"))
+    (should-not (policy-p "/x/main.txt" "bundle agent main\n"))
+    (should-not (policy-p "/x/main.cf.in" "bundle agent main\n"))))
 
 ;;; Activation, in a fresh Emacs that has only the generated autoloads
 

@@ -2,7 +2,7 @@ EMACS ?= emacs
 # Directory holding libtree-sitter-cfengine.so.  `make grammar' builds it here.
 TREESIT_DIR ?= $(CURDIR)/.treesit
 
-BATCH = $(EMACS) -Q --batch -L . -L test \
+BATCH = $(EMACS) -Q --batch -L . -L test --eval "(setq load-prefer-newer t)" \
 	--eval '(add-to-list (quote treesit-extra-load-path) "$(TREESIT_DIR)")'
 
 .PHONY: all compile checkdoc test grammar clean
