@@ -46,7 +46,7 @@
 ;; remapped to this mode, which also covers Org src blocks in "cfengine3".
 ;;
 ;; `.cf' is shared with Postfix and sendmail, so files are recognized by
-;; content: a `.cf' or `.cf.sub' file, or a `.in' template of one, with a
+;; content: a `.cf', `.cf.sub', `.cf.in' or `.cf.sub.in' file with a
 ;; bundle, body or promise block opens in `cfengine3-mode', or in this
 ;; mode once the grammar is installed.
 ;;
