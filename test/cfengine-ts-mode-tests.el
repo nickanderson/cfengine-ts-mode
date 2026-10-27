@@ -51,9 +51,9 @@
   (cfengine-ts-mode-tests--with-fixture "indent.cf"
     (let ((index (treesit-simple-imenu)))
       (should (equal (mapcar #'car (cdr (assoc "Bundle" index)))
-                     '("main" "helper")))
+                     '("main" "helper" "trailing")))
       (should (equal (mapcar #'car (cdr (assoc "Body" index)))
-                     '("control" "m"))))))
+                     '("control" "m" "control"))))))
 
 (ert-deftest cfengine-ts-mode-fontifies-variables-in-strings ()
   (skip-unless (treesit-ready-p 'cfengine t))

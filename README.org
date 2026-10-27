@@ -52,9 +52,10 @@ To turn that off and decide by file name yourself, remove the entry after the pa
 #+begin_src sh
 make grammar   # build the grammar into .treesit/
 make           # byte-compile, checkdoc, ERT tests
+make corpus MASTERFILES=~/src/masterfiles   # reindent all of masterfiles
 #+end_src
 
-Use ~EMACS=/path/to/emacs~ to test against a specific build. The indentation test strips all indentation from =test/indent.cf=, reindents, and compares; that fixture must stay unchanged under ~cfengine format~.
+Use ~EMACS=/path/to/emacs~ to test against a specific build. The indentation test strips all indentation from =test/indent.cf=, reindents, and compares; that fixture must stay unchanged under ~cfengine format~. ~make corpus~ does the same for every policy file in a masterfiles checkout, after running ~cfengine format~ on copies.
 
 * License
 

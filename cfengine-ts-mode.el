@@ -233,6 +233,81 @@ The grammar parses attributes after @else as a separate half_promise."
   "Anchor at BOL itself, leaving the line's indentation unchanged."
   bol)
 
+;; Comments directly in a block, section, class guard, promise or
+;; attribute follow `_comment_indent' in cfengine-cli's format.py.  Each
+;; node of these types adds one level for its children.
+(defconst cfengine-ts-mode--indented-types
+  '("bundle_section" "class_guarded_promises" "class_guarded_body_attributes"
+    "class_guarded_promise_block_attributes" "promise" "half_promise"
+    "attribute")
+  "Node types that indent their children one level.")
+
+(defconst cfengine-ts-mode--block-body-types
+  '("bundle_block_body" "promise_block_body" "body_block_body")
+  "Node types holding the contents of a block.")
+
+(defun cfengine-ts-mode--indented-p (node)
+  "Non-nil if NODE indents its children one level."
+  (and node (member (treesit-node-type node) cfengine-ts-mode--indented-types)))
+
+(defun cfengine-ts-mode--level-column (node)
+  "Return the column for children of NODE: one level per indenting node."
+  (let ((levels 0))
+    (while node
+      (when (cfengine-ts-mode--indented-p node)
+        (setq levels (1+ levels)))
+      (setq node (treesit-node-parent node)))
+    (* levels cfengine-ts-mode-indent-offset)))
+
+(defun cfengine-ts-mode--content-sibling (node next)
+  "Return the nearest named sibling of NODE that isn't a comment or macro.
+Search forward when NEXT is non-nil, otherwise backward."
+  (let ((n node))
+    (while (and (setq n (if next (treesit-node-next-sibling n t)
+                          (treesit-node-prev-sibling n t)))
+                (member (treesit-node-type n) '("comment" "macro"))))
+    n))
+
+(defun cfengine-ts-mode--trailing-comment-column (prev column)
+  "Return the column of the deepest content at the end of PREV.
+COLUMN is the column for PREV's siblings."
+  (while (cfengine-ts-mode--indented-p prev)
+    (setq column (+ column cfengine-ts-mode-indent-offset))
+    (setq prev (seq-find #'cfengine-ts-mode--indented-p
+                         (reverse (treesit-node-children prev)))))
+  column)
+
+(defun cfengine-ts-mode--comment-in-body-p (node parent _bol)
+  "Non-nil when NODE is a comment whose PARENT is a block or indenting node."
+  (and (equal (treesit-node-type node) "comment")
+       (or (cfengine-ts-mode--indented-p parent)
+           (member (treesit-node-type parent)
+                   cfengine-ts-mode--block-body-types))))
+
+(defun cfengine-ts-mode--comment-offset (node parent _bol)
+  "Return the column for comment NODE in PARENT, as `cfengine format' does.
+A comment aligns with the next content sibling.  With none, it aligns
+with the deepest content at the end of the previous one, so a trailing
+comment stays with the block above it."
+  (let* ((column (cfengine-ts-mode--level-column parent))
+         (deeper (+ column cfengine-ts-mode-indent-offset))
+         (nearest (cfengine-ts-mode--content-sibling node t)))
+    (catch 'done
+      (unless nearest
+        (when (member (treesit-node-type parent) '("promise" "half_promise"))
+          (throw 'done deeper))
+        (let ((prev (cfengine-ts-mode--content-sibling node nil)))
+          (when (cfengine-ts-mode--indented-p prev)
+            (throw 'done
+                   (cfengine-ts-mode--trailing-comment-column prev column)))
+          (setq nearest prev)))
+      (cond ((cfengine-ts-mode--indented-p nearest) deeper)
+            ((and (null nearest)
+                  (member (treesit-node-type parent)
+                          cfengine-ts-mode--block-body-types))
+             deeper)
+            (t column)))))
+
 (defvar cfengine-ts-mode--indent-rules
   ;; Node-type matchers are regexps, so anchor them: "promise" would
   ;; otherwise also match "class_guarded_promises".
@@ -240,6 +315,8 @@ The grammar parses attributes after @else as a separate half_promise."
      (cfengine-ts-mode--inside-string-p cfengine-ts-mode--bol 0)
      ((node-is ,(rx bos "macro" eos)) column-0 0)
      ((parent-is ,(rx bos "source_file" eos)) column-0 0)
+     (cfengine-ts-mode--comment-in-body-p
+      column-0 cfengine-ts-mode--comment-offset)
      ;; `cfengine format' quirk: stakeholder list items at promiser + 4,
      ;; its closing brace at promiser + 2.
      ((and cfengine-ts-mode--stakeholder-list-p (node-is ,(rx bos "}" eos)))

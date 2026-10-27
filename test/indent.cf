@@ -46,3 +46,25 @@ body perms m(mode)
 bundle agent helper
 {
 }
+
+body agent control
+{
+  # Before an attribute
+  ifelapsed => "1";
+
+  linux::
+    maxconnections => "10";
+
+    # Trailing comment after a class guard
+}
+
+bundle agent trailing
+{
+  files:
+    "/tmp/a" create => "true";
+
+    # Between promises
+    "/tmp/b" create => "true";
+
+      # Trailing comment after a promise
+}
