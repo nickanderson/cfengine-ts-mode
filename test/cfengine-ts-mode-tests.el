@@ -121,9 +121,8 @@ typed and the tree is incomplete throughout."
       (should-not (policy-p "/x/promises.cf" (concat line "\n"))))
     (should (policy-p "/x/test.cf.sub" "bundle agent main\n"))
     (should-not (policy-p "/x/main.txt" "bundle agent main\n"))
-    (should (policy-p "/x/promises.cf.in" "bundle agent main\n"))
-    (should (policy-p "/x/test.cf.sub.in" "bundle agent main\n"))
-    (should-not (policy-p "/x/main.in" "bundle agent main\n"))
+    (should-not (policy-p "/x/promises.cf.in" "bundle agent main\n"))
+    (should-not (policy-p "/x/test.cf.sub.in" "bundle agent main\n"))
     (should-not (policy-p "/x/main.cf.bak" "bundle agent main\n"))))
 
 ;;; Formatting
@@ -496,6 +495,79 @@ typed and the tree is incomplete throughout."
       (search-forward "m(")
       (should (equal (substring-no-properties (cfengine-ts-mode--eldoc-attribute))
                      "perms: body perms")))))
+
+(ert-deftest cfengine-ts-mode-xref ()
+  (let ((root (make-temp-file "cfengine-ts-mode-policy" t))
+        (lib nil))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "promises.cf" root)
+            (insert "body common control\n{\n"
+                    "  bundlesequence => { \"main\", helper };\n}\n"))
+          (setq lib (expand-file-name "lib.cf" root))
+          (with-temp-file lib
+            (insert "# mog sets mode, owner and group\n"
+                    "body perms mog(m, o, g)\n{\n  mode => \"$(m)\";\n}\n"))
+          (with-temp-buffer
+            (insert "bundle agent main\n{\n  files:\n    \"/tmp/x\"\n"
+                    "      perms => mog(\"644\", \"root\", \"root\");\n"
+                    "  methods:\n    \"h\" usebundle => \"helper\";\n}\n"
+                    "bundle agent helper\n{\n}\n")
+            (cfengine-ts-mode)
+            (setq buffer-file-name (expand-file-name "main.cf" root))
+            (unwind-protect
+                (cl-flet ((where (items)
+                            (mapcar (lambda (x)
+                                      (let ((loc (xref-item-location x)))
+                                        (list (file-name-nondirectory
+                                               (or (xref-location-group loc) ""))
+                                              ;; Buffer locations have a
+                                              ;; position, not a line.
+                                              (or (xref-location-line loc)
+                                                  (let ((m (xref-location-marker loc)))
+                                                    (with-current-buffer (marker-buffer m)
+                                                      (line-number-at-pos m)))))))
+                                    items)))
+                  (goto-char (point-min))
+                  (search-forward "mo")
+                  (should (equal (xref-backend-identifier-at-point 'cfengine-ts) "mog"))
+                  ;; Defined in another file of the tree.
+                  (should (equal (where (xref-backend-definitions 'cfengine-ts "mog"))
+                                 '(("lib.cf" 2))))
+                  ;; Defined in this buffer, and named in a string.
+                  (search-forward "\"hel")
+                  (should (equal (xref-backend-identifier-at-point 'cfengine-ts) "helper"))
+                  (should (equal (mapcar #'xref-item-summary
+                                         (xref-backend-definitions 'cfengine-ts "helper"))
+                                 '("bundle agent helper")))
+                  ;; References: here and in the tree,
+                  ;; comments not.
+                  (should (equal (sort (where (xref-backend-references 'cfengine-ts "mog"))
+                                       (lambda (a b) (string< (format "%S" a) (format "%S" b))))
+                                 '(("lib.cf" 2) ("main.cf" 5))))
+                  (should (member '("promises.cf" 3)
+                                  (where (xref-backend-references 'cfengine-ts "helper"))))
+                  ;; An unsaved buffer visiting a tree file is read instead
+                  ;; of the file.
+                  (let ((buffer (find-file-noselect lib)))
+                    (unwind-protect
+                        (with-current-buffer buffer
+                          (goto-char (point-min))
+                          (insert "\n\n")
+                          (should (buffer-modified-p))
+                          (with-temp-buffer
+                            (insert "bundle agent x\n{\n}\n")
+                            (cfengine-ts-mode)
+                            (setq buffer-file-name (expand-file-name "x.cf" root))
+                            (should (equal (where (xref-backend-definitions
+                                                   'cfengine-ts "mog"))
+                                           '(("lib.cf" 4))))
+                            (setq buffer-file-name nil)))
+                      (with-current-buffer buffer (set-buffer-modified-p nil))
+                      (kill-buffer buffer))))
+              (set-buffer-modified-p nil)
+              (setq buffer-file-name nil))))
+      (delete-directory root t))))
 
 (ert-deftest cfengine-ts-mode-docs-urls ()
   "Each URL was checked against docs.cfengine.com, anchor included."

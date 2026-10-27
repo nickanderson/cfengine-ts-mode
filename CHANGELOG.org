@@ -12,6 +12,7 @@ First release.
 - Completion of promise types, attributes, option values and body and bundle names from the ~cf-promises~ syntax, and ElDoc for attributes
 - ~cfengine-ts-mode-browse-docs~ (~C-c C-d~) opens the reference documentation for the thing at point
 - Completion of built-in function names and ElDoc signatures, from =cfengine.el=
+- Jump to bundle and body definitions and list references (~M-.~, ~M-?~) across the policy tree
 - Imenu, defun and sentence movement, ~which-function~, and outline folding of blocks and bundle sections
-- Opens =.cf=, =.cf.sub=, =.cf.in= and =.cf.sub.in= files that contain a block header, and remaps ~cfengine-mode~ and ~cfengine3-mode~ when the grammar is installed
+- Opens =.cf= and =.cf.sub= files that contain a block header, and remaps ~cfengine-mode~ and ~cfengine3-mode~ when the grammar is installed
 - ~cfengine-ts-mode-install-grammar~ builds and installs the grammar

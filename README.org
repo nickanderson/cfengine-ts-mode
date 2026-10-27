@@ -9,11 +9,12 @@ It uses [[https://github.com/olehermanse/tree-sitter-cfengine][tree-sitter-cfeng
 - Font lock, including ~$(var)~ and ~@(list)~ references inside strings
 - Indentation that agrees with ~cfengine format~, including while typing: new lines and incomplete blocks are indented from the surrounding text, ~:~, ~;~ and ~}~ reindent the line, and a comment moves to match the code typed after it
 - Imenu and defun navigation (~C-M-a~, ~C-M-e~) over bundles, bodies and custom promise types, and ~which-function-mode~ shows the current one
+- ~M-.~ jumps to the bundle or body named at point, bare, called or quoted, in the buffer or anywhere in its policy tree; ~M-?~ lists the references outside comments. Open buffers with unsaved changes are used instead of their files
 - Sentence movement (~M-a~, ~M-e~) by promise, and by attribute in bodies
 - ~outline-minor-mode~ folds blocks, and the sections (~vars:~, ~files:~, ...) inside bundles
 - Completion of built-in function names and ElDoc signatures, from =cfengine.el=. These use your installed ~cf-promises~ (~cfengine-cf-promises~), falling back to built-in data
 - Completion from the ~cf-promises~ syntax description: promise types valid for the bundle's type (adding the ~:~), attributes of the section's promise type or the body's type (adding ~=>~), option values such as ~"true"~, and the names of bodies and bundles of the right type from the buffer and its policy tree. ElDoc shows an attribute's type and allowed values on its name and while typing its value. These need ~cf-promises~
-- Recognizes CFEngine policy by content. =.cf= is shared with Postfix and sendmail, so a =.cf=, =.cf.sub=, =.cf.in= or =.cf.sub.in= file opens as CFEngine only if it contains a ~bundle~, ~body~ or ~promise~ block header
+- Recognizes CFEngine policy by content. =.cf= is shared with Postfix and sendmail, so a =.cf= or =.cf.sub= file opens as CFEngine only if it contains a ~bundle~, ~body~ or ~promise~ block header
 - Remaps ~cfengine-mode~ and ~cfengine3-mode~ when the grammar is installed, so Org src blocks in ~cfengine3~ use it too. Without the grammar, policy files open in ~cfengine3-mode~
 - ~M-x compile~ runs ~cf-promises -f~ on the current file
 - ~M-x cfengine-ts-mode-format-buffer~ formats with ~cfengine format~, replacing only what changed so point and marks stay put. Set ~cfengine-ts-mode-format-on-save~ to do it on every save; a file that doesn't parse is still saved, unformatted
@@ -37,7 +38,7 @@ No ~auto-mode-alist~ setup is needed.
 
 ** Opting out of detection by content
 
-The package adds an entry to ~magic-mode-alist~, which Emacs consults before ~auto-mode-alist~. It looks at the first 4000 characters of a =.cf=, =.cf.sub=, =.cf.in= or =.cf.sub.in= file and opens it in ~cfengine3-mode~ (remapped to ~cfengine-ts-mode~) if it finds a block header: a line holding only ~bundle~, ~body~ or ~promise~, a type and a name, optionally followed by a parameter list, ~{~ and a comment (~bundle agent main(x) {~). Keywords are case-sensitive, as in CFEngine. Against masterfiles and core's acceptance tests, this misses only files with no block at all.
+The package adds an entry to ~magic-mode-alist~, which Emacs consults before ~auto-mode-alist~. It looks at the first 4000 characters of a =.cf= or =.cf.sub= file and opens it in ~cfengine3-mode~ (remapped to ~cfengine-ts-mode~) if it finds a block header: a line holding only ~bundle~, ~body~ or ~promise~, a type and a name, optionally followed by a parameter list, ~{~ and a comment (~bundle agent main(x) {~). Keywords are case-sensitive, as in CFEngine. Against masterfiles and core's acceptance tests, this misses only files with no block at all.
 
 To turn that off and decide by file name yourself, remove the entry after the package is activated, for example in ~:config~:
 

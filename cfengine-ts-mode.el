@@ -46,7 +46,7 @@
 ;; remapped to this mode, which also covers Org src blocks in "cfengine3".
 ;;
 ;; `.cf' is shared with Postfix and sendmail, so files are recognized by
-;; content: a `.cf', `.cf.sub', `.cf.in' or `.cf.sub.in' file with a
+;; content: a `.cf' or `.cf.sub' file with a
 ;; bundle, body or promise block opens in `cfengine3-mode', or in this
 ;; mode once the grammar is installed.
 ;;
@@ -59,6 +59,7 @@
 (require 'treesit)
 (require 'cfengine)
 (require 'flymake)
+(require 'xref)
 
 (defgroup cfengine-ts nil
   "Tree-sitter support for CFEngine 3 policy."
@@ -119,14 +120,13 @@
 (progn
   (defun cfengine-ts-mode-policy-file-p ()
     "Return non-nil if the current buffer looks like CFEngine policy.
-The file name must end in .cf, .cf.sub, .cf.in or .cf.sub.in (the .in
-forms are templates such as masterfiles' promises.cf.in), and the text
+The file name must end in .cf or .cf.sub, and the text
 must contain a bundle, body or promise block header: the keyword, a
 type and a name, then optionally a parameter list, an opening brace and
 a comment, and nothing else on the line.  Keywords are case-sensitive,
 as in CFEngine.  Intended for `magic-mode-alist'."
     (and buffer-file-name
-         (string-match-p "\\.cf\\(?:\\.sub\\)?\\(?:\\.in\\)?\\'" buffer-file-name)
+         (string-match-p "\\.cf\\(?:\\.sub\\)?\\'" buffer-file-name)
          ;; String regexp, not `rx': this runs from the autoloads.
          ;; The parameter list may continue on the next line.
          (let ((case-fold-search nil))
@@ -1005,7 +1005,8 @@ is in an attribute's value."
   "Block definitions per policy file: FILE -> (MTIME . DEFINITIONS).")
 
 (defun cfengine-ts-mode--scan-definitions ()
-  "Return the (KIND TYPE NAME) of each block header in the current buffer."
+  "Return each block header in the current buffer.
+Each is (KIND TYPE NAME LINE COLUMN), the position being the name's."
   (save-excursion
     (save-restriction
       (widen)
@@ -1016,31 +1017,49 @@ is in an attribute's value."
                 nil t)
           (push (list (match-string-no-properties 1)
                       (match-string-no-properties 2)
-                      (match-string-no-properties 3))
+                      (match-string-no-properties 3)
+                      (line-number-at-pos (match-beginning 3) t)
+                      (save-excursion (goto-char (match-beginning 3))
+                                      (current-column)))
                 definitions))
+        (nreverse definitions)))))
+
+(defun cfengine-ts-mode--policy-sources ()
+  "Return the current buffer and the other files of its policy tree.
+A file visited in a buffer with unsaved changes is given as that buffer."
+  (cons (current-buffer)
+        (mapcar (lambda (file)
+                  (let ((buffer (get-file-buffer file)))
+                    (if (and buffer (buffer-modified-p buffer)) buffer file)))
+                (cfengine-ts-mode--lint-context))))
+
+(defun cfengine-ts-mode--file-definitions (file)
+  "Return the block headers in FILE, cached by modification time."
+  (let ((mtime (file-attribute-modification-time (file-attributes file)))
+        (cached (gethash file cfengine-ts-mode--definitions-cache)))
+    (if (and cached (equal (car cached) mtime))
+        (cdr cached)
+      (let ((definitions
+             ;; The file may be gone since the directory was listed.
+             (ignore-error file-missing
+               (with-temp-buffer
+                 (insert-file-contents file)
+                 (cfengine-ts-mode--scan-definitions)))))
+        (puthash file (cons mtime definitions)
+                 cfengine-ts-mode--definitions-cache)
         definitions))))
 
 (defun cfengine-ts-mode--definitions ()
   "Return the bundles and bodies in the buffer and its policy tree.
-Each is (KIND TYPE NAME)."
-  (append
-   (cfengine-ts-mode--scan-definitions)
-   (mapcan
-    (lambda (file)
-      (let ((mtime (file-attribute-modification-time (file-attributes file)))
-            (cached (gethash file cfengine-ts-mode--definitions-cache)))
-        (if (and cached (equal (car cached) mtime))
-            (copy-sequence (cdr cached))
-          (let ((definitions
-                 ;; The file may be gone since the directory was listed.
-                 (ignore-error file-missing
-                   (with-temp-buffer
-                     (insert-file-contents file)
-                     (cfengine-ts-mode--scan-definitions)))))
-            (puthash file (cons mtime definitions)
-                     cfengine-ts-mode--definitions-cache)
-            (copy-sequence definitions)))))
-    (cfengine-ts-mode--lint-context))))
+Each is (KIND TYPE NAME LINE COLUMN SOURCE), SOURCE being a buffer or
+a file name."
+  (mapcan (lambda (source)
+            (mapcar (lambda (d) (append d (list source)))
+                    (if (bufferp source)
+                        (with-current-buffer source
+                          (cfengine-ts-mode--scan-definitions))
+                      (cfengine-ts-mode--file-definitions source))))
+          (cfengine-ts-mode--policy-sources)))
 
 (defun cfengine-ts-mode--value-candidates (entry name)
   "Return completions for the value of attribute NAME described by ENTRY."
@@ -1170,6 +1189,76 @@ For `eldoc-documentation-functions'."
               (entry (cfengine-ts-mode--attribute context name)))
     (cfengine-ts-mode--describe-attribute name entry)))
 
+;;; Cross references
+
+(defun cfengine-ts-mode--xref-backend ()
+  "Return the xref backend for `cfengine-ts-mode'."
+  'cfengine-ts)
+
+(defun cfengine-ts-mode--xref-location (source line column)
+  "Return an xref location for LINE and COLUMN in SOURCE.
+SOURCE is a buffer or a file name."
+  (if (bufferp source)
+      (with-current-buffer source
+        (save-excursion
+          (save-restriction
+            (widen)
+            (goto-char (point-min))
+            (forward-line (1- line))
+            (move-to-column column)
+            (xref-make-buffer-location source (point)))))
+    (xref-make-file-location source line column)))
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql cfengine-ts)))
+  "Return the bundle or body name at point, if any."
+  (save-excursion
+    (skip-syntax-backward "w_")
+    (and (looking-at "[[:alnum:]_]+")
+         (match-string-no-properties 0))))
+
+(cl-defmethod xref-backend-identifier-completion-table
+  ((_backend (eql cfengine-ts)))
+  "Return the names of the bundles and bodies in the policy."
+  (seq-uniq (mapcar (lambda (d) (nth 2 d)) (cfengine-ts-mode--definitions))))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql cfengine-ts)) identifier)
+  "Return the bundles and bodies named IDENTIFIER in the policy."
+  (mapcan (lambda (d)
+            (pcase-let ((`(,kind ,type ,name ,line ,column ,source) d))
+              (when (equal name identifier)
+                (list (xref-make (format "%s %s %s" kind type name)
+                                 (cfengine-ts-mode--xref-location
+                                  source line column))))))
+          (cfengine-ts-mode--definitions)))
+
+(cl-defmethod xref-backend-references ((_backend (eql cfengine-ts)) identifier)
+  "Return the uses of IDENTIFIER in the policy, outside comments.
+Uses in strings count, as in usebundle => \"name\"."
+  (let ((regexp (concat "\\_<" (regexp-quote identifier) "\\_>"))
+        matches)
+    (dolist (source (cfengine-ts-mode--policy-sources))
+      (with-temp-buffer
+        (if (bufferp source)
+            (insert-buffer-substring-no-properties
+             source
+             (with-current-buffer source (point-min))
+             (with-current-buffer source (point-max)))
+          (ignore-error file-missing (insert-file-contents source)))
+        (set-syntax-table cfengine-ts-mode-syntax-table)
+        (goto-char (point-min))
+        (while (re-search-forward regexp nil t)
+          (unless (nth 4 (save-excursion (syntax-ppss (match-beginning 0))))
+            (let ((line (line-number-at-pos (match-beginning 0)))
+                  (column (save-excursion (goto-char (match-beginning 0))
+                                          (current-column))))
+              (push (xref-make-match
+                     (buffer-substring (line-beginning-position)
+                                       (line-end-position))
+                     (cfengine-ts-mode--xref-location source line column)
+                     (length identifier))
+                    matches))))))
+    (nreverse matches)))
+
 ;;; Reference documentation
 
 (defcustom cfengine-ts-mode-docs-version "lts"
@@ -1282,6 +1371,7 @@ See `cfengine-ts-mode-docs-url' and `cfengine-ts-mode-docs-version'."
   ;; Added last, so it runs first; function names come after.
   (add-hook 'completion-at-point-functions
             #'cfengine-ts-mode--syntax-completion-at-point nil t)
+  (add-hook 'xref-backend-functions #'cfengine-ts-mode--xref-backend nil t)
   (add-hook 'flymake-diagnostic-functions #'cfengine-ts-mode-flymake nil t)
   (when (featurep 'flycheck)
     (cfengine-ts-mode-flycheck-setup))
