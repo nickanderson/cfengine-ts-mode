@@ -10,7 +10,7 @@ It uses [[https://github.com/olehermanse/tree-sitter-cfengine][tree-sitter-cfeng
 - Indentation that agrees with =cfengine format=
 - Imenu and defun navigation over bundles, bodies and custom promise types
 - Completion of built-in function names and ElDoc signatures, from =cfengine.el=. These use your installed =cf-promises= (=cfengine-cf-promises=), falling back to built-in data
-- Recognizes CFEngine policy by content. =.cf= is shared with Postfix and sendmail, so a =.cf= or =.cf.sub= file opens as CFEngine only if it contains a =bundle=, =body= or =promise= block header
+- Recognizes CFEngine policy by content. =.cf= is shared with Postfix and sendmail, so a =.cf= or =.cf.sub= file, or a =.in= template of one, opens as CFEngine only if it contains a =bundle=, =body= or =promise= block header
 - Remaps =cfengine-mode= and =cfengine3-mode= when the grammar is installed, so Org src blocks in =cfengine3= use it too. Without the grammar, policy files open in =cfengine3-mode=
 - =M-x compile= runs =cf-promises -f= on the current file
 - Registered as a child of =cfengine3-mode=, so its hooks, snippets and keybindings still apply
@@ -30,7 +30,7 @@ No =auto-mode-alist= setup is needed.
 
 ** Opting out of detection by content
 
-The package adds an entry to =magic-mode-alist=, which Emacs consults before =auto-mode-alist=. It looks at the first 4000 characters of a =.cf= or =.cf.sub= file and opens it in =cfengine3-mode= (remapped to =cfengine-ts-mode=) if it finds a block header: a line holding only =bundle=, =body= or =promise=, a type and a name, optionally followed by a parameter list, ={= and a comment (=bundle agent main(x) {=). Keywords are case-sensitive, as in CFEngine. Against masterfiles and core's acceptance tests, this misses only files with no block at all.
+The package adds an entry to =magic-mode-alist=, which Emacs consults before =auto-mode-alist=. It looks at the first 4000 characters of a =.cf=, =.cf.sub=, =.cf.in= or =.cf.sub.in= file and opens it in =cfengine3-mode= (remapped to =cfengine-ts-mode=) if it finds a block header: a line holding only =bundle=, =body= or =promise=, a type and a name, optionally followed by a parameter list, ={= and a comment (=bundle agent main(x) {=). Keywords are case-sensitive, as in CFEngine. Against masterfiles and core's acceptance tests, this misses only files with no block at all.
 
 To turn that off and decide by file name yourself, remove the entry after the package is activated, for example in =:config=:
 

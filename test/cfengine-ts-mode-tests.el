@@ -89,7 +89,10 @@
       (should-not (policy-p "/x/promises.cf" (concat line "\n"))))
     (should (policy-p "/x/test.cf.sub" "bundle agent main\n"))
     (should-not (policy-p "/x/main.txt" "bundle agent main\n"))
-    (should-not (policy-p "/x/main.cf.in" "bundle agent main\n"))))
+    (should (policy-p "/x/promises.cf.in" "bundle agent main\n"))
+    (should (policy-p "/x/test.cf.sub.in" "bundle agent main\n"))
+    (should-not (policy-p "/x/main.in" "bundle agent main\n"))
+    (should-not (policy-p "/x/main.cf.bak" "bundle agent main\n"))))
 
 ;;; Activation, in a fresh Emacs that has only the generated autoloads
 

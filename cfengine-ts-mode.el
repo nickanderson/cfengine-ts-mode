@@ -46,9 +46,9 @@
 ;; remapped to this mode, which also covers Org src blocks in "cfengine3".
 ;;
 ;; `.cf' is shared with Postfix and sendmail, so files are recognized by
-;; content: a `.cf' or `.cf.sub' file with a bundle, body or promise
-;; block opens in `cfengine3-mode', or in this mode once the grammar is
-;; installed.
+;; content: a `.cf' or `.cf.sub' file, or a `.in' template of one, with a
+;; bundle, body or promise block opens in `cfengine3-mode', or in this
+;; mode once the grammar is installed.
 ;;
 ;; Function completion and ElDoc signatures come from `cfengine.el'.
 ;; They use the syntax of the installed `cf-promises' (see
@@ -93,13 +93,14 @@
 (progn
   (defun cfengine-ts-mode-policy-file-p ()
     "Return non-nil if the current buffer looks like CFEngine policy.
-The file name must end in .cf or .cf.sub and the text must contain a
-bundle, body or promise block header: the keyword, a type and a name,
-then optionally a parameter list, an opening brace and a comment, and
-nothing else on the line.  Keywords are case-sensitive, as in CFEngine.
+The file name must end in .cf or .cf.sub, optionally followed by .in
+for templates such as masterfiles' promises.cf.in, and the text must
+contain a bundle, body or promise block header: the keyword, a type and
+a name, then optionally a parameter list, an opening brace and a
+comment, and nothing else on the line.  Keywords are case-sensitive, as in CFEngine.
 Intended for `magic-mode-alist'."
     (and buffer-file-name
-         (string-match-p "\\.cf\\(?:\\.sub\\)?\\'" buffer-file-name)
+         (string-match-p "\\.cf\\(?:\\.sub\\)?\\(?:\\.in\\)?\\'" buffer-file-name)
          ;; String regexp, not `rx': this runs from the autoloads.
          ;; The parameter list may continue on the next line.
          (let ((case-fold-search nil))
