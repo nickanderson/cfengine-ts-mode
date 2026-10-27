@@ -1,0 +1,48 @@
+# Fixture: this file must stay byte-identical under `cfengine format'.
+body common control
+{
+  bundlesequence => { "main" };
+  inputs => { "$(sys.libdir)/stdlib.cf" };
+}
+
+bundle agent main(param)
+{
+  vars:
+    "list" slist => { "a", "b", "c" };
+    "joined" string => join(",", "list");
+
+    linux::
+      "os" string => "linux";
+
+  files:
+    "/tmp/example"
+      create => "true",
+      perms => m("0644"),
+      comment => "Example with $(param) and @(list)";
+
+  methods:
+    "any" -> { "ENT-1234", "CFE-5678" }
+      usebundle => helper;
+
+  commands:
+    "/bin/true"
+@if minimum_version(3.18)
+      inform => "false",
+@else
+      inform => "true",
+@endif
+      comment => "Multi-line
+string continuation";
+
+  reports:
+    "Hello $(this.bundle)" if => isvariable("joined");
+}
+
+body perms m(mode)
+{
+  mode => "$(mode)";
+}
+
+bundle agent helper
+{
+}

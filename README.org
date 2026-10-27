@@ -1,0 +1,42 @@
+#+TITLE: cfengine-ts-mode
+
+Tree-sitter major mode for [[https://cfengine.com][CFEngine]] 3 policy in Emacs 30+.
+
+It uses [[https://github.com/olehermanse/tree-sitter-cfengine][tree-sitter-cfengine]], the same grammar behind =cfengine format=, =cfengine lint= and the [[https://github.com/olehermanse/zed-cfengine][Zed extension]]. Highlighting follows the Zed extension's =highlights.scm=; indentation matches =cfengine format=.
+
+* Features
+
+- Font lock, including =$(var)= and =@(list)= references inside strings
+- Indentation that agrees with =cfengine format=
+- Imenu and defun navigation over bundles, bodies and custom promise types
+- Remaps =cfengine-mode= and =cfengine3-mode= when the grammar is installed, so Org src blocks in =cfengine3= use it too
+- Registered as a child of =cfengine3-mode=, so its hooks, snippets and keybindings still apply
+
+* Installation
+
+#+begin_src emacs-lisp
+(use-package cfengine-ts-mode
+  :vc (:url "https://github.com/nickanderson/cfengine-ts-mode"))
+#+end_src
+
+Then build the grammar once (needs a C compiler and git):
+
+: M-x cfengine-ts-mode-install-grammar
+
+* Customization
+
+- =cfengine-ts-mode-indent-offset= (default 2)
+- =treesit-font-lock-level= selects how much is highlighted (levels 1-4)
+
+* Development
+
+#+begin_src sh
+make grammar   # build the grammar into .treesit/
+make           # byte-compile, checkdoc, ERT tests
+#+end_src
+
+Use =EMACS=/path/to/emacs= to test against a specific build. The indentation test strips all indentation from =test/indent.cf=, reindents, and compares; that fixture must stay unchanged under =cfengine format=.
+
+* License
+
+GPL-3.0-or-later. See [[file:LICENSE][LICENSE]].
