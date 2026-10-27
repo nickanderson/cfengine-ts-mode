@@ -87,6 +87,16 @@
 (add-to-list 'treesit-language-source-alist
              '(cfengine "https://github.com/olehermanse/tree-sitter-cfengine"))
 
+(defvar cfengine-ts-mode-syntax-table
+  (let ((table (make-syntax-table cfengine3-mode-syntax-table)))
+    ;; `cfengine3-mode' only fills in its table when it runs, so do it
+    ;; here: # comments and "..." and '...' strings.
+    (cfengine-common-syntax table)
+    ;; `...' strings too, which `cfengine3-mode' doesn't know.
+    (modify-syntax-entry ?` "\"" table)
+    table)
+  "Syntax table for `cfengine-ts-mode'.")
+
 ;;; Activation
 
 ;; Keep in sync with the autoloaded form at the end of this file.
@@ -329,12 +339,178 @@ comment stays with the block above it."
              deeper)
             (t column)))))
 
+;; Indentation of incomplete code.  While a block is being typed it
+;; doesn't parse, and blank lines have no node, so these rules work from
+;; bracket depth and the previous line instead of the tree.
+
+(defun cfengine-ts-mode--incomplete-p (node parent _bol)
+  "Non-nil when NODE is missing or within a parse error under PARENT."
+  (or (null node)
+      (treesit-parent-until (or node parent)
+                            (lambda (n) (equal (treesit-node-type n) "ERROR"))
+                            t)))
+
+(defun cfengine-ts-mode--indentation-at (pos)
+  "Return the indentation of the line holding POS."
+  (save-excursion (goto-char pos) (current-indentation)))
+
+(defun cfengine-ts-mode--code-end ()
+  "Return the end of the code on the current line, before any comment."
+  (save-excursion
+    (let ((ppss (syntax-ppss (line-end-position))))
+      (goto-char (if (nth 4 ppss) (nth 8 ppss) (line-end-position)))
+      (skip-chars-backward " \t")
+      (point))))
+
+(defun cfengine-ts-mode--code-line-p ()
+  "Non-nil if the current line holds code: not blank, comment or macro."
+  (save-excursion
+    (back-to-indentation)
+    (not (or (eolp) (looking-at-p "[#@]")))))
+
+(defconst cfengine-ts-mode--section-re
+  "[[:alnum:]_]+:[ \t]*\\(?:#.*\\)?$"
+  "Regexp for a section header such as \"vars:\", from indentation.")
+
+(defconst cfengine-ts-mode--class-guard-re
+  "[^\"#\n]*::[ \t]*\\(?:#.*\\)?$"
+  "Regexp for a class guard such as \"linux::\", from indentation.")
+
+(defun cfengine-ts-mode--stakeholder-open-p (open)
+  "Non-nil if OPEN is the opening brace of a promise's stakeholders (->)."
+  (save-excursion
+    (goto-char open)
+    (looking-back "->[ \t]*" (line-beginning-position))))
+
+(defun cfengine-ts-mode--bundle-brace-p (open)
+  "Non-nil if OPEN, a block's opening brace, belongs to a bundle."
+  (save-excursion
+    (goto-char open)
+    (when (looking-back "^[ \t]*" (line-beginning-position))
+      ;; The brace is on its own line: the header is the code above.
+      (forward-line -1)
+      (while (and (not (bobp)) (not (cfengine-ts-mode--code-line-p)))
+        (forward-line -1)))
+    (back-to-indentation)
+    (looking-at-p "bundle\\_>")))
+
+(defun cfengine-ts-mode--statement-line ()
+  "Move to the line where the statement on the current line starts.
+That is the line of the opening bracket for a line starting with a
+closing one, or the first line of a string continued onto this line."
+  (back-to-indentation)
+  (let ((ppss (syntax-ppss)))
+    (cond ((nth 3 ppss) (goto-char (nth 8 ppss)))
+          ((and (memq (char-after) '(?\} ?\))) (nth 1 ppss))
+           (goto-char (nth 1 ppss)))))
+  (back-to-indentation))
+
+(defun cfengine-ts-mode--next-code-indentation ()
+  "Return the indentation of the next code line in the same block, or nil.
+Nil too when that line closes the block or list."
+  (save-excursion
+    (let ((depth (car (syntax-ppss (line-beginning-position)))))
+      (forward-line 1)
+      (while (and (not (eobp)) (not (cfengine-ts-mode--code-line-p)))
+        (forward-line 1))
+      (back-to-indentation)
+      (and (not (eobp))
+           (not (memq (char-after) '(?\} ?\))))
+           (= (car (syntax-ppss)) depth)
+           (current-indentation)))))
+
+(defun cfengine-ts-mode--indent-line ()
+  "Indent the current line, then the comments just above it.
+A comment's indentation follows the code after it, so indenting a code
+line can move the comments that lead up to it."
+  (prog1 (treesit-indent)
+    (when (cfengine-ts-mode--code-line-p)
+      (save-excursion
+        (forward-line -1)
+        (while (and (not (bobp))
+                    (looking-at-p "^[ \t]*\\(?:#\\|$\\)"))
+          (unless (looking-at-p "^[ \t]*$")
+            (treesit-indent))
+          (forward-line -1))))))
+
+(defun cfengine-ts-mode--guess-column (_node _parent bol)
+  "Return a column for the line at BOL from bracket depth and context."
+  (save-excursion
+    (goto-char bol)
+    (skip-chars-forward " \t")
+    (let* ((off cfengine-ts-mode-indent-offset)
+           (ppss (syntax-ppss))
+           (depth (car ppss))
+           (open (nth 1 ppss)))
+      (cond
+       ;; Inside a string the leading whitespace is content.
+       ((nth 3 ppss) (current-indentation))
+       ;; A closing bracket lines up with the line that opened it, or
+       ;; one level in for stakeholders as `cfengine format' does.
+       ((memq (char-after) '(?\} ?\)))
+        (if (null open) 0
+          (+ (cfengine-ts-mode--indentation-at open)
+             (if (cfengine-ts-mode--stakeholder-open-p open) off 0))))
+       ((or (<= depth 0) (null open)) 0)
+       ;; In a list or call: one level in, two for stakeholders as
+       ;; `cfengine format' does.
+       ;; A comment goes with the code after it, as in `cfengine format'.
+       ((and (looking-at-p "#") (cfengine-ts-mode--next-code-indentation)))
+       ((>= depth 2)
+        (+ (cfengine-ts-mode--indentation-at open)
+           (if (cfengine-ts-mode--stakeholder-open-p open) (* 2 off) off)))
+       (t
+        (let ((bundle (cfengine-ts-mode--bundle-brace-p open)))
+          (cond
+           ((looking-at-p cfengine-ts-mode--class-guard-re)
+            (if bundle (* 2 off) off))
+           ((looking-at-p cfengine-ts-mode--section-re) off)
+           (t (cfengine-ts-mode--guess-from-previous bol open bundle)))))))))
+
+(defun cfengine-ts-mode--guess-from-previous (bol open bundle)
+  "Return a column for BOL from the previous code line in its block.
+OPEN is the block's opening brace; BUNDLE is non-nil in a bundle."
+  (let ((off cfengine-ts-mode-indent-offset))
+    (save-excursion
+      (goto-char bol)
+      (let ((found nil))
+        (while (and (not found)
+                    (zerop (forward-line -1))
+                    (> (line-end-position) open))
+          (when (and (cfengine-ts-mode--code-line-p)
+                     (> (point) (save-excursion (goto-char open)
+                                                (line-end-position))))
+            (setq found t)))
+        (if (not found)
+            off
+          (back-to-indentation)
+          (let ((last (char-before (cfengine-ts-mode--code-end))))
+            (cond
+             ((or (looking-at-p cfengine-ts-mode--section-re)
+                  (looking-at-p cfengine-ts-mode--class-guard-re))
+              (+ (current-indentation) off))
+             (t
+              (cfengine-ts-mode--statement-line)
+              (let ((promiser (and bundle (memq (char-after) '(?\" ?\' ?`))))
+                    (column (current-indentation)))
+                (cond
+                 ;; A promise or body attribute ended.
+                 ((eq last ?\;)
+                  (if (and bundle (not promiser)) (- column off) column))
+                 ;; Another attribute follows.
+                 ((eq last ?,) (if promiser (+ column off) column))
+                 ;; A promiser waiting for its attributes.
+                 (promiser (+ column off))
+                 (t column)))))))))))
+
 (defvar cfengine-ts-mode--indent-rules
   ;; Node-type matchers are regexps, so anchor them: "promise" would
   ;; otherwise also match "class_guarded_promises".
   `((cfengine
      (cfengine-ts-mode--inside-string-p cfengine-ts-mode--bol 0)
      ((node-is ,(rx bos "macro" eos)) column-0 0)
+     ;; While typing, the tree is incomplete: guess from the text.
+     (cfengine-ts-mode--incomplete-p column-0 cfengine-ts-mode--guess-column)
      ((parent-is ,(rx bos "source_file" eos)) column-0 0)
      (cfengine-ts-mode--comment-in-body-p
       column-0 cfengine-ts-mode--comment-offset)
@@ -690,7 +866,7 @@ See also `cfengine-ts-mode-lint-arguments'."
 ;;;###autoload
 (define-derived-mode cfengine-ts-mode prog-mode "CFEngine3[ts]"
   "Major mode for CFEngine 3 policy, powered by tree-sitter."
-  :syntax-table cfengine3-mode-syntax-table
+  :syntax-table cfengine-ts-mode-syntax-table
   ;; Settings shared with `cfengine3-mode' that don't depend on the parser.
   (cfengine-common-settings)
   (setq-local comment-end "")
@@ -706,6 +882,9 @@ See also `cfengine-ts-mode-lint-arguments'."
             #'cfengine-ts-mode--completion-at-point nil t)
   (add-hook 'flymake-diagnostic-functions #'cfengine-ts-mode-flymake nil t)
   (add-hook 'before-save-hook #'cfengine-ts-mode--format-before-save nil t)
+  ;; Reindent as section headers, class guards and statements are typed.
+  (setq-local electric-indent-chars
+              (append '(?: ?\; ?\}) electric-indent-chars))
   (when (treesit-ready-p 'cfengine)
     (treesit-parser-create 'cfengine)
     (setq-local indent-tabs-mode nil)
@@ -734,7 +913,8 @@ See also `cfengine-ts-mode-lint-arguments'."
                    (sentence (or ,(rx bos (or "promise" "half_promise") eos)
                                  cfengine-ts-mode--body-attribute-p)))))
     (treesit-major-mode-setup)
-    (setq-local forward-sentence-function #'cfengine-ts-mode--forward-sentence)))
+    (setq-local forward-sentence-function #'cfengine-ts-mode--forward-sentence)
+    (setq-local indent-line-function #'cfengine-ts-mode--indent-line)))
 
 (derived-mode-add-parents 'cfengine-ts-mode '(cfengine3-mode))
 

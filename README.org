@@ -7,7 +7,7 @@ It uses [[https://github.com/olehermanse/tree-sitter-cfengine][tree-sitter-cfeng
 * Features
 
 - Font lock, including ~$(var)~ and ~@(list)~ references inside strings
-- Indentation that agrees with ~cfengine format~
+- Indentation that agrees with ~cfengine format~, including while typing: new lines and incomplete blocks are indented from the surrounding text, ~:~, ~;~ and ~}~ reindent the line, and a comment moves to match the code typed after it
 - Imenu and defun navigation (~C-M-a~, ~C-M-e~) over bundles, bodies and custom promise types, and ~which-function-mode~ shows the current one
 - Sentence movement (~M-a~, ~M-e~) by promise, and by attribute in bodies
 - ~outline-minor-mode~ folds blocks, and the sections (~vars:~, ~files:~, ...) inside bundles

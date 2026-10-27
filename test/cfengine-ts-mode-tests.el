@@ -41,6 +41,35 @@
       (indent-region (point-min) (point-max))
       (should (equal (buffer-string) expected)))))
 
+(ert-deftest cfengine-ts-mode-indent-while-typing ()
+  "Typing the fixture from scratch lays it out as `cfengine format' does.
+Each line is typed without its indentation, character by character with
+`electric-indent-mode', so blocks stay unclosed until their brace is
+typed and the tree is incomplete throughout."
+  (skip-unless (treesit-ready-p 'cfengine t))
+  (let* ((want (with-temp-buffer
+                 (insert-file-contents
+                  (expand-file-name "indent.cf" cfengine-ts-mode-tests--dir))
+                 (buffer-string)))
+         (lines (split-string want "\n")))
+    (with-temp-buffer
+      (cfengine-ts-mode)
+      (electric-indent-local-mode 1)
+      (let ((first t))
+        (dolist (line lines)
+          (unless first
+            (let ((last-command-event ?\n))
+              (call-interactively #'newline)))
+          (setq first nil)
+          ;; In a multi-line string, leading whitespace is content.
+          (dolist (char (string-to-list (if (nth 3 (syntax-ppss))
+                                            line
+                                          (string-trim-left line))))
+            (let ((last-command-event char))
+              (call-interactively #'self-insert-command)))))
+      (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                     want)))))
+
 (ert-deftest cfengine-ts-mode-no-parse-errors ()
   (skip-unless (treesit-ready-p 'cfengine t))
   (cfengine-ts-mode-tests--with-fixture "indent.cf"
