@@ -14,7 +14,8 @@ compile:
 	  -f batch-byte-compile cfengine-ts-mode.el
 
 checkdoc:
-	$(BATCH) --eval '(checkdoc-file "cfengine-ts-mode.el")'
+	$(BATCH) --eval '(checkdoc-file "cfengine-ts-mode.el")' \
+	  --eval '(when (get-buffer "*Warnings*") (kill-emacs 1))'
 
 test:
 	$(BATCH) -l test/cfengine-ts-mode-tests.el -f ert-run-tests-batch-and-exit

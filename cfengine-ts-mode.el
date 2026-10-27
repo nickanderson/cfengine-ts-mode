@@ -58,6 +58,7 @@
 
 (require 'treesit)
 (require 'cfengine)
+(require 'flymake)
 
 (defgroup cfengine-ts nil
   "Tree-sitter support for CFEngine 3 policy."
@@ -67,6 +68,21 @@
   "Number of spaces for each indentation level in `cfengine-ts-mode'."
   :type 'integer
   :safe #'integerp)
+
+(defcustom cfengine-ts-mode-cfengine-program "cfengine"
+  "The CFEngine CLI, used for `cfengine format' and `cfengine lint'."
+  :type 'string
+  :risky t)
+
+(defcustom cfengine-ts-mode-format-on-save nil
+  "Non-nil means format the buffer with `cfengine format' before saving."
+  :type 'boolean
+  :safe #'booleanp)
+
+(defcustom cfengine-ts-mode-lint-arguments nil
+  "Extra arguments for `cfengine lint'."
+  :type '(repeat string)
+  :risky t)
 
 (add-to-list 'treesit-language-source-alist
              '(cfengine "https://github.com/olehermanse/tree-sitter-cfengine"))
@@ -350,6 +366,242 @@ comment stays with the block above it."
                      nil nil 1)))
     (treesit-node-text name t)))
 
+;;; Formatting
+
+(defun cfengine-ts-mode-format-buffer ()
+  "Format the buffer with `cfengine format'.
+Only the changed regions are replaced, so point and marks are kept.
+If the policy can't be parsed, the buffer is left alone."
+  (interactive)
+  (let ((out (generate-new-buffer " *cfengine format*" t))
+        (coding-system-for-read 'utf-8)
+        (coding-system-for-write 'utf-8))
+    (unwind-protect
+        (save-restriction
+          (widen)
+          (let ((status (call-process-region
+                         nil nil cfengine-ts-mode-cfengine-program
+                         nil (list out nil) nil "format" "-")))
+            (unless (eql status 0)
+              (user-error "Formatting failed: %s"
+                          (with-current-buffer out
+                            (string-trim (buffer-string)))))
+            (unless (zerop (compare-buffer-substrings nil nil nil out nil nil))
+              ;; Emacs 31 takes a buffer here and obsoletes the
+              ;; Emacs 30 way.
+              (if (>= emacs-major-version 31)
+                  (replace-region-contents (point-min) (point-max) out)
+                (with-no-warnings (replace-buffer-contents out))))))
+      (kill-buffer out))))
+
+(defun cfengine-ts-mode--format-before-save ()
+  "Format the buffer if `cfengine-ts-mode-format-on-save' is non-nil.
+A failure is reported but doesn't stop the save."
+  (when cfengine-ts-mode-format-on-save
+    (condition-case err
+        (cfengine-ts-mode-format-buffer)
+      (error (message "%s" (error-message-string err))))))
+
+;;; Linting
+
+(defvar-local cfengine-ts-mode--lint-process nil
+  "The running `cfengine lint' process for this buffer.")
+
+(defconst cfengine-ts-mode--lint-regexp
+  (concat "^\\(Error\\|Deprecation\\|Convention\\): \\(.*\\)"
+          " at \\(.+\\):\\([0-9]+\\):\\([0-9]+\\)$")
+  "Regexp for a `cfengine lint' message.
+Groups: kind, message, file, line and column (1-based).")
+
+(defun cfengine-ts-mode--lint-region (source line column width)
+  "Return (BEG . END) in SOURCE for LINE and 1-based COLUMN.
+WIDTH is the length of the span, or nil for the rest of the symbol."
+  (with-current-buffer source
+    (save-excursion
+      (save-restriction
+        (widen)
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (let ((eol (line-end-position)))
+          (forward-char (min (1- column) (- eol (point))))
+          (let* ((beg (if (and (= (point) eol) (> eol (line-beginning-position)))
+                          (1- (point))
+                        (point)))
+                 (end (cond (width (min eol (+ beg width)))
+                            ((progn (goto-char beg)
+                                    (skip-syntax-forward "w_")
+                                    (> (point) beg))
+                             (point))
+                            (t (min eol (1+ beg))))))
+            (cons beg (max end (min (1+ beg) (point-max))))))))))
+
+(defun cfengine-ts-mode--lint-diagnostics (source file)
+  "Parse `cfengine lint' output in the current buffer for SOURCE.
+FILE is the copy of SOURCE that was linted."
+  (let (diagnostics)
+    (goto-char (point-min))
+    (while (re-search-forward cfengine-ts-mode--lint-regexp nil t)
+      (let ((kind (match-string 1))
+            (message (match-string 2))
+            (path (match-string 3))
+            (line (string-to-number (match-string 4)))
+            (column (string-to-number (match-string 5)))
+            ;; The span is underlined as ^---^ on the line above.
+            (width (save-excursion
+                     (forward-line -1)
+                     (and (looking-at "^ *\\(\\^\\(?:-*\\^\\)?\\) *$")
+                          (length (match-string 1))))))
+        (when (looking-at "\nHint: \\(.*\\)")
+          (setq message (concat message ". " (match-string 1))))
+        (when (equal (file-name-nondirectory path)
+                     (file-name-nondirectory file))
+          (let ((region (cfengine-ts-mode--lint-region
+                         source line column width)))
+            (push (flymake-make-diagnostic
+                   source (car region) (cdr region)
+                   (if (equal kind "Error") :error :warning)
+                   message)
+                  diagnostics)))))
+    ;; Lint failed the file but we couldn't place why.
+    (when (and (null diagnostics)
+               (cfengine-ts-mode--lint-checked-p file "FAIL"))
+      (push (cfengine-ts-mode--lint-line-1
+             source :error (concat "cfengine lint failed: "
+                                   (cfengine-ts-mode--lint-summary)))
+            diagnostics))
+    (nreverse diagnostics)))
+
+(defun cfengine-ts-mode--lint-checked-p (file &optional result)
+  "Non-nil if the lint output in the current buffer covers FILE.
+Lint prints PASS or FAIL for each file it checks.  RESULT restricts
+the match to one of those."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward
+     (concat "^" (or result "\\(?:PASS\\|FAIL\\)") ": .*"
+             (regexp-quote (file-name-nondirectory file)))
+     nil t)))
+
+(defun cfengine-ts-mode--lint-summary ()
+  "Return the first error in the lint output in the current buffer.
+Fall back to the first non-empty line."
+  (save-excursion
+    (goto-char (point-min))
+    (if (re-search-forward "^Error: .*" nil t)
+        (match-string 0)
+      (skip-chars-forward " \t\n")
+      (buffer-substring (point) (line-end-position)))))
+
+(defun cfengine-ts-mode--lint-line-1 (source type text)
+  "Return a Flymake diagnostic of TYPE with TEXT on line 1 of SOURCE."
+  (let ((region (cfengine-ts-mode--lint-region source 1 1 nil)))
+    (flymake-make-diagnostic source (car region) (cdr region) type text)))
+
+(defun cfengine-ts-mode--policy-root ()
+  "Return the policy directory holding the visited file, or nil.
+That is the nearest parent with promises.cf or promises.cf.in, as in
+masterfiles."
+  (and buffer-file-name
+       (locate-dominating-file
+        buffer-file-name
+        (lambda (dir)
+          (or (file-exists-p (expand-file-name "promises.cf" dir))
+              (file-exists-p (expand-file-name "promises.cf.in" dir)))))))
+
+(defun cfengine-ts-mode--lint-context ()
+  "Return the other policy files to lint the buffer with.
+These are the .cf files under `cfengine-ts-mode--policy-root', except
+the visited file and anything in a hidden, tests or documentation
+directory.  Hidden directories can hold whole copies of the tree (git
+worktrees), and the examples in the others define bundles that would
+clash with the real ones."
+  ;; Expanded: the file names go to a process, not through a shell.
+  (when-let* ((dir (cfengine-ts-mode--policy-root))
+              (root (expand-file-name dir)))
+    (let ((self (file-truename buffer-file-name)))
+      (seq-remove (lambda (file) (equal (file-truename file) self))
+                  (directory-files-recursively
+                   root "\\.cf\\'" nil
+                   (lambda (dir)
+                     (let ((name (file-name-nondirectory dir)))
+                       (not (or (string-prefix-p "." name)
+                                (member name '("tests" "documentation")))))))))))
+
+(defun cfengine-ts-mode--lint-start (source file context report-fn
+                                         &optional note)
+  "Lint FILE, a copy of SOURCE, with CONTEXT and pass results to REPORT-FN.
+With CONTEXT, a list of the policy's other files, lint in strict mode;
+if lint never gets to FILE, typically because a context file doesn't
+parse, start over without CONTEXT.  Without it, turn strict mode off.
+NOTE, if non-nil, is added to the results as a note on line 1."
+  (with-current-buffer source
+    (setq cfengine-ts-mode--lint-process
+          (make-process
+           :name "cfengine-lint"
+           :noquery t
+           :connection-type 'pipe
+           :buffer (generate-new-buffer " *cfengine lint*" t)
+           :command `(,cfengine-ts-mode-cfengine-program "lint"
+                      ,@(unless context '("--strict" "no"))
+                      ,@cfengine-ts-mode-lint-arguments ,file ,@context)
+           :sentinel
+           (lambda (proc _event)
+             (when (memq (process-status proc) '(exit signal))
+               (let ((retrying nil))
+                 (unwind-protect
+                     (if (not (and (buffer-live-p source)
+                                   (eq proc (buffer-local-value
+                                             'cfengine-ts-mode--lint-process
+                                             source))))
+                         (flymake-log :warning "Canceling obsolete check %s" proc)
+                       (with-current-buffer (process-buffer proc)
+                         (cond
+                          ((cfengine-ts-mode--lint-checked-p file)
+                           (funcall report-fn
+                                    (append
+                                     (and note
+                                          (list (cfengine-ts-mode--lint-line-1
+                                                 source :note note)))
+                                     (cfengine-ts-mode--lint-diagnostics
+                                      source file))))
+                          (context
+                           (setq retrying t)
+                           (cfengine-ts-mode--lint-start
+                            source file nil report-fn
+                            (concat "Linted without the rest of the policy: "
+                                    (cfengine-ts-mode--lint-summary))))
+                          (t
+                           (funcall report-fn
+                                    (list (cfengine-ts-mode--lint-line-1
+                                           source :error
+                                           (concat "cfengine lint did not run: "
+                                                   (cfengine-ts-mode--lint-summary)))))))))
+                   (unless retrying (delete-file file))
+                   (kill-buffer (process-buffer proc))))))))))
+
+(defun cfengine-ts-mode-flymake (report-fn &rest _args)
+  "Flymake backend running `cfengine lint' on a copy of the buffer.
+REPORT-FN is the Flymake callback.
+
+Inside a policy tree such as masterfiles, the copy is linted together
+with the tree's other files in strict mode, so bundles and bodies from
+the standard library and elsewhere resolve.  Otherwise it is linted on
+its own with strict mode off, since those references can't be resolved.
+See also `cfengine-ts-mode-lint-arguments'."
+  (unless (executable-find cfengine-ts-mode-cfengine-program)
+    (error "Cannot find %s" cfengine-ts-mode-cfengine-program))
+  (when (process-live-p cfengine-ts-mode--lint-process)
+    (kill-process cfengine-ts-mode--lint-process))
+  ;; lint picks the file type from the name, so always use .cf.
+  (let ((file (make-temp-file "cfengine-lint" nil ".cf"))
+        (coding-system-for-write 'utf-8))
+    (save-restriction
+      (widen)
+      (write-region nil nil file nil 'silent))
+    (cfengine-ts-mode--lint-start (current-buffer) file
+                                  (cfengine-ts-mode--lint-context)
+                                  report-fn)))
+
 ;;;###autoload
 (define-derived-mode cfengine-ts-mode prog-mode "CFEngine3[ts]"
   "Major mode for CFEngine 3 policy, powered by tree-sitter."
@@ -367,6 +619,8 @@ comment stays with the block above it."
             #'cfengine3-documentation-function nil t)
   (add-hook 'completion-at-point-functions
             #'cfengine-ts-mode--completion-at-point nil t)
+  (add-hook 'flymake-diagnostic-functions #'cfengine-ts-mode-flymake nil t)
+  (add-hook 'before-save-hook #'cfengine-ts-mode--format-before-save nil t)
   (when (treesit-ready-p 'cfengine)
     (treesit-parser-create 'cfengine)
     (setq-local indent-tabs-mode nil)

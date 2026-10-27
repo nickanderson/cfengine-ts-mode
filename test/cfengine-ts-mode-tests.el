@@ -97,6 +97,158 @@
     (should-not (policy-p "/x/main.in" "bundle agent main\n"))
     (should-not (policy-p "/x/main.cf.bak" "bundle agent main\n"))))
 
+;;; Formatting
+
+(defmacro cfengine-ts-mode-tests--with-cli (&rest body)
+  "Run BODY if the CFEngine CLI is installed, else skip."
+  (declare (indent 0))
+  `(progn
+     (skip-unless (executable-find cfengine-ts-mode-cfengine-program))
+     ,@body))
+
+(ert-deftest cfengine-ts-mode-format-buffer ()
+  (cfengine-ts-mode-tests--with-cli
+    (with-temp-buffer
+      (insert "bundle agent main\n{\nvars:\n\"x\"   string => \"a\";\n}\n")
+      (cfengine-ts-mode)
+      (goto-char (point-min))
+      (search-forward "string")
+      (cfengine-ts-mode-format-buffer)
+      (should (equal (buffer-string)
+                     "bundle agent main\n{\n  vars:\n    \"x\" string => \"a\";\n}\n"))
+      ;; Point stays on the same word.
+      (should (looking-back "string" (line-beginning-position))))))
+
+(ert-deftest cfengine-ts-mode-format-buffer-leaves-broken-policy-alone ()
+  (cfengine-ts-mode-tests--with-cli
+    (with-temp-buffer
+      (let ((broken "bundle agent main\n{\n  vars:\n    \"x\" string => {{ \"a\";\n"))
+        (insert broken)
+        (cfengine-ts-mode)
+        (should-error (cfengine-ts-mode-format-buffer) :type 'user-error)
+        (should (equal (buffer-string) broken))
+        ;; Formatting on save reports the failure instead of blocking.
+        (let ((cfengine-ts-mode-format-on-save t))
+          (cfengine-ts-mode--format-before-save))
+        (should (equal (buffer-string) broken))))))
+
+;;; Linting
+
+(ert-deftest cfengine-ts-mode-lint-parses-output ()
+  (with-temp-buffer
+    (insert "bundle agent main\n{\n  vars:\n"
+            "    \"x\" string => nosuchfn(\"a\"), ifvarclass => \"linux\";\n"
+            "    \"y\" string => \"b\";\n}\n")
+    (let ((source (current-buffer))
+          (file "/tmp/cfengine-lint123.cf"))
+      (with-temp-buffer
+        (insert "    \"x\" string => nosuchfn(\"a\"), ifvarclass => \"linux\";\n"
+                "                  ^------^\n"
+                "Error: Call to unknown function 'nosuchfn' at " file ":4:19\n"
+                "Hint: The body 'nosuchfn' is defined nowhere\n"
+                "                                 ^--------^\n"
+                "Deprecation: Use 'if' instead of 'ifvarclass' at " file ":4:34\n"
+                "Error: Something in another file at /x/other.cf:1:1\n"
+                "FAIL: " file " (2 errors)\n")
+        (let ((diags (cfengine-ts-mode--lint-diagnostics source file)))
+          (should (equal
+                   (mapcar (lambda (d)
+                             (list (flymake-diagnostic-type d)
+                                   (with-current-buffer source
+                                     (buffer-substring (flymake-diagnostic-beg d)
+                                                       (flymake-diagnostic-end d)))
+                                   (flymake-diagnostic-text d)))
+                           diags)
+                   '((:error "nosuchfn"
+                             "Call to unknown function 'nosuchfn'. The body 'nosuchfn' is defined nowhere")
+                     (:warning "ifvarclass" "Use 'if' instead of 'ifvarclass'")))))
+        ;; A failure we can't place is still reported, on line 1.
+        (erase-buffer)
+        (insert "Something unexpected\nFAIL: " file " (1 error)\n")
+        (let ((diags (cfengine-ts-mode--lint-diagnostics source file)))
+          (should (= (length diags) 1))
+          (should (eq (flymake-diagnostic-type (car diags)) :error))
+          (should (= (flymake-diagnostic-beg (car diags)) 1)))))))
+
+(defun cfengine-ts-mode-tests--lint (text file)
+  "Lint TEXT as if visiting FILE; return (TYPE TEXT-AT-REGION) per problem."
+  (with-temp-buffer
+    (insert text)
+    (cfengine-ts-mode)
+    (setq buffer-file-name file)
+    (let (result done)
+      (cfengine-ts-mode-flymake (lambda (diags &rest _)
+                                  (setq result diags done t)))
+      (with-timeout (60 (error "cfengine lint timed out"))
+        (while (not done) (accept-process-output nil 0.1)))
+      (setq buffer-file-name nil)
+      (mapcar (lambda (d)
+                (list (flymake-diagnostic-type d)
+                      (buffer-substring (flymake-diagnostic-beg d)
+                                        (flymake-diagnostic-end d))))
+              result))))
+
+(defconst cfengine-ts-mode-tests--lint-policy
+  (concat "bundle agent main\n{\n"
+          "  files:\n    \"/tmp/x\"\n      perms => mog(\"0644\", \"root\", \"root\");\n"
+          "  vars:\n    \"x\" string => nosuchfn(\"a\"), ifvarclass => \"linux\";\n}\n"))
+
+(ert-deftest cfengine-ts-mode-lint-standalone ()
+  (cfengine-ts-mode-tests--with-cli
+    ;; Outside a policy tree, mog can't be resolved, so strict mode is
+    ;; off: only the unknown built-in function is reported.
+    (should (equal (cfengine-ts-mode-tests--lint
+                    cfengine-ts-mode-tests--lint-policy
+                    (expand-file-name "main.cf" temporary-file-directory))
+                   '((:error "nosuchfn"))))))
+
+(ert-deftest cfengine-ts-mode-lint-in-policy-tree ()
+  (cfengine-ts-mode-tests--with-cli
+    (let ((root (make-temp-file "cfengine-ts-mode-policy" t)))
+      (unwind-protect
+          (progn
+            (make-directory (expand-file-name "lib" root))
+            (make-directory (expand-file-name "services" root))
+            (with-temp-file (expand-file-name "promises.cf" root)
+              (insert "bundle agent other\n{\n}\n"))
+            (with-temp-file (expand-file-name "lib/files.cf" root)
+              (insert "body perms mog(mode, user, group)\n{\n"
+                      "  mode => \"$(mode)\";\n}\n"))
+            ;; In strict mode with the tree as context, mog resolves and
+            ;; the deprecation is reported too.
+            (should (equal (cfengine-ts-mode-tests--lint
+                            cfengine-ts-mode-tests--lint-policy
+                            (expand-file-name "services/main.cf" root))
+                           '((:error "nosuchfn") (:warning "ifvarclass")))))
+        (delete-directory root t)))))
+
+(ert-deftest cfengine-ts-mode-lint-falls-back-when-context-breaks ()
+  (cfengine-ts-mode-tests--with-cli
+    (let ((root (make-temp-file "cfengine-ts-mode-policy" t)))
+      (unwind-protect
+          (progn
+            (with-temp-file (expand-file-name "promises.cf" root)
+              (insert "bundle agent other\n{\n}\n"))
+            ;; A context file that doesn't parse stops lint before it
+            ;; reaches the buffer.
+            (with-temp-file (expand-file-name "broken.cf" root)
+              (insert "bundle agent broken\n{\n  vars:\n    \"x\" string => \"a\"\n}\n"))
+            (let ((diags (cfengine-ts-mode-tests--lint
+                          cfengine-ts-mode-tests--lint-policy
+                          (expand-file-name "main.cf" root))))
+              (should (equal (mapcar #'car diags) '(:note :error)))
+              (should (equal (cadr (nth 1 diags)) "nosuchfn"))))
+        (delete-directory root t)))))
+
+(ert-deftest cfengine-ts-mode-lint-reports-when-it-cannot-run ()
+  (cfengine-ts-mode-tests--with-cli
+    (let ((cfengine-ts-mode-lint-arguments '("--bogus")))
+      (should (equal (mapcar #'car (cfengine-ts-mode-tests--lint
+                                    cfengine-ts-mode-tests--lint-policy
+                                    (expand-file-name "main.cf"
+                                                      temporary-file-directory)))
+                     '(:error))))))
+
 ;;; Activation, in a fresh Emacs that has only the generated autoloads
 
 (defun cfengine-ts-mode-tests--fresh-emacs (grammar files)
