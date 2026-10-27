@@ -2,3 +2,4 @@
 /.treesit/
 /cfengine-ts-mode-autoloads.el
 /.corpus/
+/.elpa/

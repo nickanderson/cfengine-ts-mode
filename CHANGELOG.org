@@ -1,0 +1,14 @@
+#+TITLE: Changelog
+
+* 0.1.0 (unreleased)
+
+First release.
+
+- Font lock from the tree-sitter-cfengine grammar, following the Zed extension's =highlights.scm=, plus ~$(var)~ and ~@(list)~ references inside strings and bare bundle and body references as calls
+- Indentation that matches ~cfengine format~, checked against every policy file in masterfiles (~make corpus~)
+- ~cfengine-ts-mode-format-buffer~ (~C-c C-f~), ~cfengine-ts-mode-format-region~ (~C-c C-r~) and ~cfengine-ts-mode-format-on-save~, using ~cfengine format~
+- A Flymake backend for ~cfengine lint~, linting with the rest of the policy tree in strict mode when the file is in one
+- Completion of built-in function names and ElDoc signatures, from =cfengine.el=
+- Imenu, defun and sentence movement, ~which-function~, and outline folding of blocks and bundle sections
+- Opens =.cf=, =.cf.sub=, =.cf.in= and =.cf.sub.in= files that contain a block header, and remaps ~cfengine-mode~ and ~cfengine3-mode~ when the grammar is installed
+- ~cfengine-ts-mode-install-grammar~ builds and installs the grammar
