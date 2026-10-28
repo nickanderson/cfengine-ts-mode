@@ -930,8 +930,8 @@ See `cfengine-ts-mode-flymake' for how the rest of the policy is used."
       (setq node (cdr (assq (if (stringp key) (intern key) key) node))))))
 
 (defun cfengine-ts-mode--block-header (open)
-  "Return (KIND TYPE) for the block whose opening brace is at OPEN.
-KIND is \"bundle\", \"body\" or \"promise\"."
+  "Return (KIND TYPE NAME) for the block whose opening brace is at OPEN.
+KIND is \"bundle\", \"body\" or \"promise\"; NAME is nil if not typed yet."
   (save-excursion
     (goto-char open)
     (when (looking-back "^[ \t]*" (line-beginning-position))
@@ -939,8 +939,9 @@ KIND is \"bundle\", \"body\" or \"promise\"."
       (while (and (not (bobp)) (not (cfengine-ts-mode--code-line-p)))
         (forward-line -1)))
     (back-to-indentation)
-    (when (looking-at "\\(bundle\\|body\\|promise\\)[ \t]+\\([[:alnum:]_]+\\)")
-      (list (match-string-no-properties 1) (match-string-no-properties 2)))))
+    (when (looking-at "\\(bundle\\|body\\|promise\\)[ \t]+\\([[:alnum:]_]+\\)\\(?:[ \t]+\\([[:alnum:]_]+\\)\\)?")
+      (list (match-string-no-properties 1) (match-string-no-properties 2)
+            (match-string-no-properties 3)))))
 
 (defun cfengine-ts-mode--section (open)
   "Return the promise type of the section around point, after OPEN."
@@ -955,8 +956,8 @@ KIND is \"bundle\", \"body\" or \"promise\"."
 
 (defun cfengine-ts-mode--context ()
   "Return the CFEngine context at point as a plist, or nil.
-Keys: :block (KIND TYPE), :section, :depth, and :attribute when point
-is in an attribute's value."
+Keys: :block (KIND TYPE), :name (the block's), :section, :depth,
+:string, and :attribute when point is in an attribute's value."
   (let* ((ppss (syntax-ppss))
          (open (car (nth 9 ppss))))
     (when open
@@ -981,7 +982,8 @@ is in an attribute's value."
                     (let ((end (point)))
                       (skip-syntax-backward "w_")
                       (buffer-substring-no-properties (point) end))))))
-          (list :block header
+          (list :block (seq-take header 2)
+                :name (nth 2 header)
                 :section (and (equal (car header) "bundle")
                               (cfengine-ts-mode--section open))
                 :depth (car ppss)
@@ -1052,27 +1054,59 @@ promise type allows and the ones already used with it in the buffer."
   (cdr (assq (intern name) (cfengine-ts-mode--attributes context))))
 
 (defvar cfengine-ts-mode--definitions-cache (make-hash-table :test #'equal)
-  "Block definitions per policy file: FILE -> (MTIME . DEFINITIONS).")
+  "Definitions per policy file: FILE -> (MTIME . DEFINITIONS).")
+
+(defconst cfengine-ts-mode--definition-re
+  (rx bol (* blank)
+      (or (seq (group-n 1 (or "bundle" "body" "promise")) (+ blank)
+               (group-n 2 (+ (in alnum "_"))) (+ blank)
+               (group-n 3 (+ (in alnum "_"))))
+          (seq (group-n 4 (+ (in alnum "_"))) ":" (* blank) (or "#" eol))
+          (seq "\"" (group-n 5 (+ (in alnum "_"))) (in "\"["))))
+  "Match a block header, a section header or a promiser.")
 
 (defun cfengine-ts-mode--scan-definitions ()
-  "Return each block header in the current buffer.
-Each is (KIND TYPE NAME LINE COLUMN), the position being the name's."
+  "Return the blocks, block parameters, variables and classes in the buffer.
+Each is (KIND TYPE NAME LINE COLUMN), the position being the name's.
+For a block KIND is \"bundle\", \"body\" or \"promise\" and TYPE its
+type.  For a parameter, or a variable or class promised in a bundle's
+vars: or classes: section, KIND is \"parameter\", \"vars\" or
+\"classes\" and TYPE is the name of its block.  The buffer must use
+`cfengine-ts-mode-syntax-table'."
   (save-excursion
     (save-restriction
       (widen)
       (goto-char (point-min))
-      (let (definitions)
-        (while (re-search-forward
-                "^[ \t]*\\(bundle\\|body\\|promise\\)[ \t]+\\([[:alnum:]_]+\\)[ \t]+\\([[:alnum:]_]+\\)"
-                nil t)
-          (push (list (match-string-no-properties 1)
-                      (match-string-no-properties 2)
-                      (match-string-no-properties 3)
-                      (line-number-at-pos (match-beginning 3) t)
-                      (save-excursion (goto-char (match-beginning 3))
-                                      (current-column)))
-                definitions))
-        (nreverse definitions)))))
+      (let (definitions block bundle section)
+        (cl-flet ((add (kind type group)
+                    (push (list kind type (match-string-no-properties group)
+                                (line-number-at-pos (match-beginning group) t)
+                                (save-excursion (goto-char (match-beginning group))
+                                                (current-column)))
+                          definitions)))
+          (while (re-search-forward cfengine-ts-mode--definition-re nil t)
+            (let ((ppss (save-match-data
+                          (save-excursion (syntax-ppss (match-beginning 0))))))
+              (cond
+               ((nth 8 ppss))
+               ((match-beginning 1)
+                (add (match-string-no-properties 1) (match-string-no-properties 2) 3)
+                (setq block (match-string-no-properties 3)
+                      bundle (equal (match-string 1) "bundle")
+                      section nil)
+                (when (looking-at "[ \t]*(")
+                  (goto-char (match-end 0))
+                  (while (re-search-forward "\\=[ \t\n,]*\\([[:alnum:]_]+\\)" nil t)
+                    (add "parameter" block 1))))
+               ((/= (car ppss) 1))
+               ((match-beginning 4) (setq section (match-string-no-properties 4)))
+               ((and bundle (member section '("vars" "classes"))
+                     ;; A promiser, not a value on a continuation line.
+                     (save-excursion (goto-char (match-beginning 0))
+                                     (forward-comment (- (point)))
+                                     (memq (char-before) '(?\; ?{ ?:))))
+                (add section block 5)))))
+          (nreverse definitions))))))
 
 (defun cfengine-ts-mode--policy-sources ()
   "Return the current buffer and the other files of its policy tree.
@@ -1094,20 +1128,33 @@ A file visited in a buffer with unsaved changes is given as that buffer."
              (ignore-error file-missing
                (with-temp-buffer
                  (insert-file-contents file)
+                 (set-syntax-table cfengine-ts-mode-syntax-table)
                  (cfengine-ts-mode--scan-definitions)))))
         (puthash file (cons mtime definitions)
                  cfengine-ts-mode--definitions-cache)
         definitions))))
 
+(defvar-local cfengine-ts-mode--buffer-definitions nil
+  "The buffer's definitions, as (MODIFICATION-TICK . DEFINITIONS).")
+
+(defun cfengine-ts-mode--buffer-definitions ()
+  "Return the definitions in the current buffer, cached until it changes."
+  (let ((tick (buffer-chars-modified-tick)))
+    (if (eql (car cfengine-ts-mode--buffer-definitions) tick)
+        (cdr cfengine-ts-mode--buffer-definitions)
+      (cdr (setq cfengine-ts-mode--buffer-definitions
+                 (cons tick (cfengine-ts-mode--scan-definitions)))))))
+
 (defun cfengine-ts-mode--definitions ()
-  "Return the bundles and bodies in the buffer and its policy tree.
-Each is (KIND TYPE NAME LINE COLUMN SOURCE), SOURCE being a buffer or
-a file name."
+  "Return the definitions in the buffer and its policy tree.
+Each is (KIND TYPE NAME LINE COLUMN SOURCE), as from
+`cfengine-ts-mode--scan-definitions', SOURCE being a buffer or a file
+name."
   (mapcan (lambda (source)
             (mapcar (lambda (d) (append d (list source)))
                     (if (bufferp source)
                         (with-current-buffer source
-                          (cfengine-ts-mode--scan-definitions))
+                          (cfengine-ts-mode--buffer-definitions))
                       (cfengine-ts-mode--file-definitions source))))
           (cfengine-ts-mode--policy-sources)))
 
@@ -1214,6 +1261,146 @@ the block's brace, rather than in a promise awaiting more attributes."
                              (not (looking-at-p "[ \t]*=>")))
                     (insert " => "))))))))))
 
+;;; Completion of variables and classes
+
+(defvar cfengine-ts-mode--builtins-cache nil
+  "Alist of `cfengine-cf-promises' values to the built-ins they report.")
+
+(defun cfengine-ts-mode--builtins ()
+  "Return (VARIABLES . CLASSES), the built-ins `cf-promises' reports.
+VARIABLES are named with their scope, as \"sys.arch\"; CLASSES are
+this host's hard classes.  Both are nil without `cf-promises'."
+  (when cfengine-cf-promises
+    (or (cdr (assoc cfengine-cf-promises cfengine-ts-mode--builtins-cache))
+        (let ((file (make-temp-file "cfengine-ts-mode" nil ".cf"
+                                    "bundle agent main\n{\n}\n")))
+          (unwind-protect
+              (cl-flet ((names (option)
+                          (with-temp-buffer
+                            (when (eql 0 (ignore-errors
+                                           (call-process cfengine-cf-promises nil
+                                                         '(t nil) nil
+                                                         option "-f" file)))
+                              (goto-char (point-min))
+                              ;; Skip the column headings.
+                              (forward-line 1)
+                              (let (names)
+                                (while (re-search-forward
+                                        "^\\(?:default:\\)?\\([^ \t\n[]+\\)" nil t)
+                                  (push (match-string-no-properties 1) names))
+                                (seq-uniq (nreverse names)))))))
+                (let ((builtins (cons (names "--show-vars")
+                                      (names "--show-classes"))))
+                  (push (cons cfengine-cf-promises builtins)
+                        cfengine-ts-mode--builtins-cache)
+                  builtins))
+            (delete-file file))))))
+
+(defconst cfengine-ts-mode--this-variables
+  '("bundle" "handle" "namespace" "promise_dirname" "promise_filename"
+    "promise_linenumber" "promiser" "promiser_gid" "promiser_pid"
+    "promiser_ppid" "promiser_uid" "service_policy")
+  "Variables of the this scope, which the agent sets for each promise.")
+
+(defun cfengine-ts-mode--reference-bounds ()
+  "Return (BEG END OPEN) of the variable name in $(...) or ${...} at point.
+OPEN is the opening bracket character.  Return nil elsewhere."
+  (let ((beg (save-excursion (skip-chars-backward "[:alnum:]_.:") (point)))
+        (end (save-excursion (skip-chars-forward "[:alnum:]_.:") (point))))
+    (when (and (> beg (1+ (point-min)))
+               (memq (char-before beg) '(?\( ?{))
+               (memq (char-before (1- beg)) '(?$ ?@)))
+      (list beg end (char-before beg)))))
+
+(defun cfengine-ts-mode--uniq-candidates (candidates)
+  "Return CANDIDATES, (NAME . ANNOTATION) pairs, keeping each NAME's first."
+  (let ((seen (make-hash-table :test #'equal)))
+    (seq-filter (lambda (c)
+                  (unless (gethash (car c) seen)
+                    (puthash (car c) t seen)))
+                candidates)))
+
+(defun cfengine-ts-mode--annotations (candidates)
+  "Return an annotation function for CANDIDATES, (NAME . ANNOTATION) pairs."
+  (let ((annotations (make-hash-table :test #'equal)))
+    (dolist (c candidates)
+      (puthash (car c) (cdr c) annotations))
+    (lambda (candidate) (gethash candidate annotations))))
+
+(defun cfengine-ts-mode--variable-candidates (block)
+  "Return (NAME . ANNOTATION) for the variables to offer in BLOCK.
+Those are BLOCK's parameters and variables, BUNDLE.NAME for every
+bundle's variables, and the built-in ones."
+  (let (candidates)
+    (dolist (d (cfengine-ts-mode--definitions))
+      (pcase-let ((`(,kind ,type ,name . ,_) d))
+        (when (and (member kind '("vars" "parameter")) (equal type block))
+          (push (cons name (concat " " kind)) candidates))
+        (when (equal kind "vars")
+          (push (cons (concat type "." name) " vars") candidates))))
+    (dolist (name (car (cfengine-ts-mode--builtins)))
+      (push (cons name " built-in") candidates))
+    (dolist (name cfengine-ts-mode--this-variables)
+      (push (cons (concat "this." name) " built-in") candidates))
+    (cfengine-ts-mode--uniq-candidates (nreverse candidates))))
+
+(defun cfengine-ts-mode--variable-completion-at-point ()
+  "Complete the variable name in a $(...) or ${...} reference at point."
+  (when-let* ((bounds (and (not (nth 4 (syntax-ppss)))
+                           (cfengine-ts-mode--reference-bounds)))
+              (candidates (cfengine-ts-mode--variable-candidates
+                           (plist-get (cfengine-ts-mode--context) :name))))
+    (pcase-let ((`(,beg ,end ,open) bounds))
+      (list beg end candidates
+            :exclusive 'no
+            :annotation-function
+            (cfengine-ts-mode--annotations candidates)
+            :exit-function
+            (lambda (_ status)
+              (let ((close (if (eq open ?\() ?\) ?})))
+                (when (and (eq status 'finished)
+                           (not (eq (char-after) close)))
+                  (insert close))))))))
+
+(defconst cfengine-ts-mode--class-attributes
+  '("if" "unless" "ifvarclass" "expression" "and" "or" "xor" "not")
+  "Attributes whose values are class expressions.")
+
+(defun cfengine-ts-mode--class-candidates ()
+  "Return (NAME . ANNOTATION) for the classes of the policy and the host."
+  (let (candidates)
+    (dolist (d (cfengine-ts-mode--definitions))
+      (when (equal (car d) "classes")
+        (push (cons (nth 2 d) (concat " class in " (nth 1 d))) candidates)))
+    (dolist (name (cdr (cfengine-ts-mode--builtins)))
+      (push (cons name " hard class") candidates))
+    (cfengine-ts-mode--uniq-candidates (nreverse candidates))))
+
+(defun cfengine-ts-mode--class-completion-at-point ()
+  "Complete a class name in a class guard or a class expression's value."
+  (when-let* ((context (and (not (nth 4 (syntax-ppss)))
+                            (cfengine-ts-mode--context)))
+              (beg (save-excursion (skip-chars-backward "[:alnum:]_") (point)))
+              ((if (plist-get context :string)
+                   (member (plist-get context :attribute)
+                           cfengine-ts-mode--class-attributes)
+                 ;; A class guard being typed: only class expression
+                 ;; characters from the start of a statement.
+                 (and (= (plist-get context :depth) 1)
+                      (member (car (plist-get context :block)) '("bundle" "body"))
+                      (save-excursion
+                        (goto-char beg)
+                        (skip-chars-backward "[:alnum:]_.|&!() \t")
+                        (and (bolp)
+                             (cfengine-ts-mode--statement-start-p
+                              (car (nth 9 (syntax-ppss)))))))))
+              (candidates (cfengine-ts-mode--class-candidates)))
+    (list beg (save-excursion (skip-chars-forward "[:alnum:]_") (point))
+          candidates
+          :exclusive 'no
+          :annotation-function
+          (cfengine-ts-mode--annotations candidates))))
+
 (defun cfengine-ts-mode--describe-attribute (name entry)
   "Return a one-line description of attribute NAME from syntax ENTRY."
   (let ((type (cdr (assq 'type entry)))
@@ -1268,32 +1455,72 @@ SOURCE is a buffer or a file name."
     (xref-make-file-location source line column)))
 
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql cfengine-ts)))
-  "Return the bundle or body name at point, if any."
-  (save-excursion
-    (skip-syntax-backward "w_")
-    (and (looking-at "[[:alnum:]_]+")
-         (match-string-no-properties 0))))
+  "Return the variable reference or the name at point, if any.
+A variable reference in $(...) or ${...} carries the name of the block
+it is in as the property `cfengine-ts-mode-block'."
+  (if-let* ((bounds (cfengine-ts-mode--reference-bounds))
+            ((< (car bounds) (cadr bounds))))
+      (propertize (buffer-substring-no-properties (car bounds) (cadr bounds))
+                  'cfengine-ts-mode-block
+                  (plist-get (cfengine-ts-mode--context) :name))
+    (save-excursion
+      (skip-syntax-backward "w_")
+      (and (looking-at "[[:alnum:]_]+")
+           (match-string-no-properties 0)))))
 
 (cl-defmethod xref-backend-identifier-completion-table
   ((_backend (eql cfengine-ts)))
-  "Return the names of the bundles and bodies in the policy."
-  (seq-uniq (mapcar (lambda (d) (nth 2 d)) (cfengine-ts-mode--definitions))))
+  "Return the names of the blocks, classes and variables in the policy.
+Variables are named BUNDLE.NAME."
+  (seq-uniq (mapcan (lambda (d)
+                      (pcase (car d)
+                        ("vars" (list (concat (nth 1 d) "." (nth 2 d))))
+                        ("parameter" nil)
+                        (_ (list (nth 2 d)))))
+                    (cfengine-ts-mode--definitions))))
+
+(defun cfengine-ts-mode--variable-definitions (identifier block)
+  "Return the definitions of variable IDENTIFIER, used in BLOCK.
+IDENTIFIER is NAME or BUNDLE.NAME, optionally with a namespace prefix.
+An unqualified name is looked up in BLOCK, then in every bundle."
+  (let* ((reference (replace-regexp-in-string "\\`[[:alnum:]_]+:" "" identifier))
+         (dot (string-search "." reference))
+         (scope (if dot (substring reference 0 dot) block))
+         (name (if dot (substring reference (1+ dot)) reference))
+         (definitions (cfengine-ts-mode--definitions))
+         (variable-p (lambda (d) (and (member (car d) '("vars" "parameter"))
+                                      (equal (nth 2 d) name)))))
+    (or (seq-filter (lambda (d) (and (funcall variable-p d) (equal (nth 1 d) scope)))
+                    definitions)
+        (unless dot
+          (seq-filter (lambda (d) (and (funcall variable-p d) (equal (car d) "vars")))
+                      definitions)))))
 
 (cl-defmethod xref-backend-definitions ((_backend (eql cfengine-ts)) identifier)
-  "Return the bundles and bodies named IDENTIFIER in the policy."
-  (mapcan (lambda (d)
-            (pcase-let ((`(,kind ,type ,name ,line ,column ,source) d))
-              (when (equal name identifier)
-                (list (xref-make (format "%s %s %s" kind type name)
-                                 (cfengine-ts-mode--xref-location
-                                  source line column))))))
-          (cfengine-ts-mode--definitions)))
+  "Return the definitions of IDENTIFIER in the policy.
+A variable reference is looked up among variables and parameters, and
+so is a name with a dot; any other name among blocks and classes."
+  (let ((block (get-text-property 0 'cfengine-ts-mode-block identifier)))
+    (mapcar (lambda (d)
+              (pcase-let ((`(,kind ,type ,name ,line ,column ,source) d))
+                (xref-make (if (member kind '("bundle" "body" "promise"))
+                               (format "%s %s %s" kind type name)
+                             (format "%s %s.%s" kind type name))
+                           (cfengine-ts-mode--xref-location source line column))))
+            (if (or block (string-search "." identifier))
+                (cfengine-ts-mode--variable-definitions identifier block)
+              (seq-filter (lambda (d)
+                            (and (member (car d) '("bundle" "body" "promise" "classes"))
+                                 (equal (nth 2 d) identifier)))
+                          (cfengine-ts-mode--definitions))))))
 
 (cl-defmethod xref-backend-references ((_backend (eql cfengine-ts)) identifier)
   "Return the uses of IDENTIFIER in the policy, outside comments.
-Uses in strings count, as in usebundle => \"name\"."
-  (let ((regexp (concat "\\_<" (regexp-quote identifier) "\\_>"))
-        matches)
+Uses in strings count, as in usebundle => \"name\".  For a variable,
+the uses of its name, qualified or not."
+  (let* ((identifier (replace-regexp-in-string "\\`.*[.:]" "" identifier))
+         (regexp (concat "\\_<" (regexp-quote identifier) "\\_>"))
+         matches)
     (dolist (source (cfengine-ts-mode--policy-sources))
       (with-temp-buffer
         (if (bufferp source)
@@ -1437,11 +1664,16 @@ See `cfengine-ts-mode-docs-url' and `cfengine-ts-mode-docs-version'."
             #'cfengine3-documentation-function nil t)
   (add-hook 'eldoc-documentation-functions
             #'cfengine-ts-mode--eldoc-attribute nil t)
+  ;; Each added function runs before those added earlier: variables,
+  ;; then the syntax, classes, and function names last.
   (add-hook 'completion-at-point-functions
             #'cfengine-ts-mode--completion-at-point nil t)
-  ;; Added last, so it runs first; function names come after.
+  (add-hook 'completion-at-point-functions
+            #'cfengine-ts-mode--class-completion-at-point nil t)
   (add-hook 'completion-at-point-functions
             #'cfengine-ts-mode--syntax-completion-at-point nil t)
+  (add-hook 'completion-at-point-functions
+            #'cfengine-ts-mode--variable-completion-at-point nil t)
   (add-hook 'xref-backend-functions #'cfengine-ts-mode--xref-backend nil t)
   (add-hook 'flymake-diagnostic-functions #'cfengine-ts-mode-flymake nil t)
   (when (featurep 'flycheck)

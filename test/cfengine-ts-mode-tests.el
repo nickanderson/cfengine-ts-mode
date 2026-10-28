@@ -416,8 +416,17 @@ typed and the tree is incomplete throughout."
     (cfengine-ts-mode)
     (search-backward "|")
     (delete-char 1)
-    (let ((capf (run-hook-wrapped 'completion-at-point-functions
-                                  (lambda (f) (and (functionp f) (funcall f))))))
+    ;; As `completion-at-point': a non-exclusive table with no match for
+    ;; the prefix gives way to the next function.
+    (let ((capf (run-hook-wrapped
+                 'completion-at-point-functions
+                 (lambda (f)
+                   (when-let* ((capf (and (functionp f) (funcall f))))
+                     (and (or (not (eq (plist-get (nthcdr 3 capf) :exclusive) 'no))
+                              (all-completions
+                               (buffer-substring-no-properties (nth 0 capf) (nth 1 capf))
+                               (nth 2 capf)))
+                          capf))))))
       (when capf
         (let ((prefix (buffer-substring-no-properties (nth 0 capf) (nth 1 capf))))
           (list prefix (all-completions prefix (nth 2 capf)) capf))))))
@@ -500,6 +509,112 @@ bundle agent other
       (should (equal (mapcar #'xref-item-summary
                              (xref-backend-definitions 'cfengine-ts "git"))
                      '("promise agent git"))))))
+
+(defconst cfengine-ts-mode-tests--variables
+  "bundle common g
+{
+  vars:
+      \"list\" slist => {
+        \"not_a_var\",
+        \"nor_this\"
+      };
+      \"long\" string =>
+        \"not_a_var_either\";
+      \"array[key]\" string => \"v\";
+  classes:
+    linux::
+      \"g_ready\" expression => \"any\"; # \"commented\"
+}
+"
+  "Variables and classes, with lines that only look like promisers.")
+
+(ert-deftest cfengine-ts-mode-scans-variables-and-classes ()
+  (with-temp-buffer
+    (insert cfengine-ts-mode-tests--variables
+            "bundle agent main(x, y)\n{\n  vars:\n    \"z\" string => \"$(x)\";\n}\n")
+    (cfengine-ts-mode)
+    (should (equal (mapcar (lambda (d) (seq-take d 3))
+                           (cfengine-ts-mode--scan-definitions))
+                   '(("bundle" "common" "g")
+                     ("vars" "g" "list") ("vars" "g" "long") ("vars" "g" "array")
+                     ("classes" "g" "g_ready")
+                     ("bundle" "agent" "main")
+                     ("parameter" "main" "x") ("parameter" "main" "y")
+                     ("vars" "main" "z")))))
+  ;; Scanning keeps its match data across `syntax-ppss', which can
+  ;; clobber it in a parsed buffer.
+  (cfengine-ts-mode-tests--with-fixture "indent.cf"
+    (should (cfengine-ts-mode--scan-definitions))))
+
+(ert-deftest cfengine-ts-mode-completes-variables ()
+  (let ((complete (lambda (text)
+                    (cfengine-ts-mode-tests--complete
+                     (concat cfengine-ts-mode-tests--variables text))))
+        (main "bundle agent main(x)\n{\n  vars:\n    \"z\" string => \"a\";\n    \"w\" string => \"%s\";\n}\n"))
+    ;; The block's own variables and parameters, unqualified.
+    (let ((result (funcall complete (format main "$(|)"))))
+      (dolist (name '("x" "z" "w" "g.list" "g.long" "g.array" "this.promiser"))
+        (should (member name (nth 1 result))))
+      (should-not (member "list" (nth 1 result)))
+      (should-not (member "g.not_a_var" (nth 1 result))))
+    (should (equal (nth 1 (funcall complete (format main "${g.lo|}")))
+                   '("g.long")))
+    ;; Completing closes the reference.
+    (with-temp-buffer
+      (insert cfengine-ts-mode-tests--variables (format main "$(g.lo|"))
+      (cfengine-ts-mode)
+      (search-backward "|")
+      (delete-char 1)
+      (completion-at-point)
+      (should (looking-back (regexp-quote "$(g.long)") (line-beginning-position))))
+    ;; The built-ins, from cf-promises.
+    (when (car (cfengine-ts-mode--builtins))
+      (should (member "sys.arch" (nth 1 (funcall complete (format main "$(sys.ar|)"))))))))
+
+(ert-deftest cfengine-ts-mode-completes-classes ()
+  (let ((complete (lambda (text)
+                    (cfengine-ts-mode-tests--complete
+                     (concat cfengine-ts-mode-tests--variables text)))))
+    ;; In a class guard, and in a class expression.
+    (should (member "g_ready" (nth 1 (funcall complete
+                                              "bundle agent main\n{\n  vars:\n    g_re|\n}\n"))))
+    (should (member "g_ready" (nth 1 (funcall complete
+                                              "bundle agent main\n{\n  vars:\n    linux.!g_re|\n}\n"))))
+    (should (member "g_ready" (nth 1 (funcall complete
+                                              "bundle agent main\n{\n  vars:\n    \"v\" string => \"a\",\n      if => \"linux.g_re|\";\n}\n"))))
+    ;; Not in other strings, nor in a promise's attributes.
+    (should-not (member "g_ready" (nth 1 (funcall complete
+                                                  "bundle agent main\n{\n  vars:\n    \"v\" string => \"g_re|\";\n}\n"))))
+    (should-not (member "g_ready" (nth 1 (funcall complete
+                                                  "bundle agent main\n{\n  vars:\n    \"v\"\n      g_re|\n}\n"))))
+    (when (cdr (cfengine-ts-mode--builtins))
+      (should (member "any" (nth 1 (funcall complete
+                                            "bundle agent main\n{\n  vars:\n    an|\n}\n")))))))
+
+(ert-deftest cfengine-ts-mode-xref-variables-and-classes ()
+  (with-temp-buffer
+    (insert cfengine-ts-mode-tests--variables
+            "bundle agent main(x)\n{\n  vars:\n    \"z\" string => \"$(x)\";\n"
+            "    \"long\" string => \"$(z) ${g.long} $(long) $(default:g.list)\";\n"
+            "  reports:\n    g_ready::\n      \"ok\";\n}\n")
+    (cfengine-ts-mode)
+    (cl-flet ((definitions-at (text)
+                (goto-char (point-min))
+                (search-forward text)
+                (mapcar #'xref-item-summary
+                        (xref-backend-definitions
+                         'cfengine-ts (xref-backend-identifier-at-point 'cfengine-ts)))))
+      (should (equal (definitions-at "$(x") '("parameter main.x")))
+      (should (equal (definitions-at "$(z") '("vars main.z")))
+      (should (equal (definitions-at "${g.lo") '("vars g.long")))
+      ;; Unqualified: the block's own first.
+      (should (equal (definitions-at "$(lo") '("vars main.long")))
+      (should (equal (definitions-at "default:g.li") '("vars g.list")))
+      (should (equal (definitions-at "g_rea") '("classes g.g_ready")))
+      (should (equal (definitions-at "bundle agent ma") '("bundle agent main"))))
+    (should (member "g.long" (xref-backend-identifier-completion-table 'cfengine-ts)))
+    ;; References to a variable, qualified or not.
+    (should (= (length (xref-backend-references 'cfengine-ts "g.long")) 4))))
 
 (ert-deftest cfengine-ts-mode-completes-attributes ()
   (cfengine-ts-mode-tests--with-syntax
