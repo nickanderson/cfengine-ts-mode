@@ -988,14 +988,64 @@ is in an attribute's value."
                 :string (nth 3 ppss)
                 :attribute attribute))))))
 
+(defconst cfengine-ts-mode--promise-block-attributes
+  '((path (type . "string") (range . "") (status . "normal"))
+    (interpreter (type . "string") (range . "") (status . "normal")))
+  "Syntax entries of the attributes of a custom promise type block.")
+
+(defun cfengine-ts-mode--common-attributes ()
+  "Return the syntax entries of the attributes every promise type allows."
+  (let ((types (cfengine-ts-mode--syntax 'promiseTypes)))
+    (seq-filter (lambda (attribute)
+                  (seq-every-p (lambda (type)
+                                 (assq (car attribute)
+                                       (cdr (assq 'attributes (cdr type)))))
+                               types))
+                (cdr (assq 'attributes (cdar types))))))
+
+(defun cfengine-ts-mode--custom-promise-types (bundle-type)
+  "Return the custom promise types defined for bundles of BUNDLE-TYPE.
+These are the promise blocks in the buffer and its policy tree."
+  (seq-uniq (mapcan (lambda (d)
+                      (and (equal (car d) "promise") (equal (nth 1 d) bundle-type)
+                           (list (nth 2 d))))
+                    (cfengine-ts-mode--definitions))))
+
+(defun cfengine-ts-mode--custom-attributes-used (type)
+  "Return the attribute names used in the buffer's sections of TYPE."
+  (let (names)
+    (dolist (section (treesit-query-capture
+                      'cfengine '((bundle_section (promise_guard) @guard))
+                      nil nil t))
+      (when (equal (string-trim (treesit-node-text section t) nil "[ \t:]+")
+                   type)
+        (dolist (name (treesit-query-capture (treesit-node-parent section)
+                                             '((attribute_name) @name)
+                                             nil nil t))
+          (push (treesit-node-text name t) names))))
+    (seq-uniq (nreverse names))))
+
 (defun cfengine-ts-mode--attributes (context)
-  "Return the syntax entries of the attributes allowed in CONTEXT."
+  "Return the syntax entries of the attributes allowed in CONTEXT.
+In a section of a custom promise type, those are the attributes every
+promise type allows and the ones already used with it in the buffer."
   (pcase (plist-get context :block)
-    (`("bundle" ,_)
+    (`("bundle" ,type)
      (when-let* ((section (plist-get context :section)))
-       (cfengine-ts-mode--syntax 'promiseTypes section 'attributes)))
+       (or (cfengine-ts-mode--syntax 'promiseTypes section 'attributes)
+           (when (member section (cfengine-ts-mode--custom-promise-types type))
+             (let ((common (cfengine-ts-mode--common-attributes)))
+               (append common
+                       (mapcan (lambda (name)
+                                 (unless (assq (intern name) common)
+                                   (list (list (intern name)
+                                               '(type . "custom")
+                                               '(status . "normal")))))
+                               (cfengine-ts-mode--custom-attributes-used
+                                section))))))))
     (`("body" ,type)
-     (cfengine-ts-mode--syntax 'bodyTypes type 'attributes))))
+     (cfengine-ts-mode--syntax 'bodyTypes type 'attributes))
+    (`("promise" ,_) cfengine-ts-mode--promise-block-attributes)))
 
 (defun cfengine-ts-mode--attribute (context name)
   "Return the syntax entry of attribute NAME in CONTEXT, or nil."
@@ -1013,7 +1063,7 @@ Each is (KIND TYPE NAME LINE COLUMN), the position being the name's."
       (goto-char (point-min))
       (let (definitions)
         (while (re-search-forward
-                "^[ \t]*\\(bundle\\|body\\)[ \t]+\\([[:alnum:]_]+\\)[ \t]+\\([[:alnum:]_]+\\)"
+                "^[ \t]*\\(bundle\\|body\\|promise\\)[ \t]+\\([[:alnum:]_]+\\)[ \t]+\\([[:alnum:]_]+\\)"
                 nil t)
           (push (list (match-string-no-properties 1)
                       (match-string-no-properties 2)
@@ -1134,13 +1184,19 @@ the block's brace, rather than in a promise awaiting more attributes."
                              (cfengine-ts-mode--statement-start-p
                               (car (nth 9 (syntax-ppss)))))
              (not (looking-at-p "[[:alnum:]_]*:")))
-        (let ((types (cfengine-ts-mode--syntax
-                      'bundleTypes (nth 1 (plist-get context :block))
-                      'promiseTypes)))
+        (let* ((bundle-type (nth 1 (plist-get context :block)))
+               (custom (cfengine-ts-mode--custom-promise-types bundle-type))
+               (types (append (cfengine-ts-mode--syntax
+                               'bundleTypes bundle-type 'promiseTypes)
+                              custom)))
           (when types
-            (list beg end (append types nil)
+            (list beg end types
                   :exclusive 'no
-                  :annotation-function (lambda (_) " promise type")
+                  :annotation-function
+                  (lambda (candidate)
+                    (if (member candidate custom)
+                        " custom promise type"
+                      " promise type"))
                   :exit-function
                   (lambda (_ status)
                     (when (eq status 'finished)
@@ -1186,7 +1242,9 @@ For `eldoc-documentation-functions'."
                                (when (looking-at
                                       "\\([[:alnum:]_]+\\)[ \t]*=>")
                                  (match-string-no-properties 1))))))
-              (entry (cfengine-ts-mode--attribute context name)))
+              (entry (cfengine-ts-mode--attribute context name))
+              ;; Nothing is known about a custom promise type's own.
+              ((not (equal (cdr (assq 'type entry)) "custom"))))
     (cfengine-ts-mode--describe-attribute name entry)))
 
 ;;; Cross references
@@ -1283,14 +1341,17 @@ Uses in strings count, as in usebundle => \"name\"."
 CONTEXT is from `cfengine-ts-mode--context'.  Attributes allowed in
 every promise type are documented on the promise types page; a body's
 attributes on the page of the promise type that uses the body, or of the
-component for control bodies."
+component for control bodies.  Custom promise types are documented on
+one page."
   (pcase (plist-get context :block)
     (`("bundle" ,_)
      (when-let* ((section (plist-get context :section))
                  (entry (cfengine-ts-mode--attribute context name)))
-       (if (equal (cdr (assq 'visibility entry)) "global")
-           "promise-types/"
-         (format "promise-types/%s/" section))))
+       (cond ((equal (cdr (assq 'visibility entry)) "global") "promise-types/")
+             ((cfengine-ts-mode--syntax 'promiseTypes section)
+              (format "promise-types/%s/" section))
+             (t "promise-types/custom/"))))
+    (`("promise" ,_) "promise-types/custom/")
     (`("body" ,type)
      (or (cdr (assoc type cfengine-ts-mode--control-body-pages))
          (catch 'page
@@ -1303,6 +1364,11 @@ component for control bodies."
                         (if (equal (cdr (assq 'visibility entry)) "global")
                             "promise-types/"
                           (format "promise-types/%s/" (car promise-type))))))))))))
+
+(defun cfengine-ts-mode--anchor (page name)
+  "Return PAGE with the anchor of attribute NAME.
+The custom promise types page has no anchors for attributes."
+  (if (equal page "promise-types/custom/") page (concat page "#" name)))
 
 (defun cfengine-ts-mode-docs-url ()
   "Return the reference documentation URL for the thing at point.
@@ -1325,14 +1391,19 @@ attribute whose value point is in; otherwise the reference index."
                  (save-excursion (skip-syntax-forward "w_")
                                  (looking-at-p "[ \t]*=>")))
             (when-let* ((base (cfengine-ts-mode--attribute-page context word)))
-              (concat base "#" word)))
+              (cfengine-ts-mode--anchor base word)))
            ((and word (eq after ?:)
                  (assq (intern word) (cfengine-ts-mode--syntax 'promiseTypes)))
             (format "promise-types/%s/" word))
+           ((and word (eq after ?:)
+                 (equal (car (plist-get context :block)) "bundle")
+                 (member word (cfengine-ts-mode--custom-promise-types
+                               (nth 1 (plist-get context :block)))))
+            "promise-types/custom/")
            ((plist-get context :attribute)
             (let ((name (plist-get context :attribute)))
               (when-let* ((base (cfengine-ts-mode--attribute-page context name)))
-                (concat base "#" name)))))))
+                (cfengine-ts-mode--anchor base name)))))))
     (format "https://docs.cfengine.com/docs/%s/reference/%s"
             cfengine-ts-mode-docs-version (or page ""))))
 

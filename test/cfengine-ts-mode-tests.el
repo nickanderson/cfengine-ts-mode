@@ -435,6 +435,72 @@ typed and the tree is incomplete throughout."
                         (nth 1 (cfengine-ts-mode-tests--complete
                                 "bundle agent main\n{\n  ins|\n}\n"))))))
 
+(defconst cfengine-ts-mode-tests--custom
+  "promise agent git
+{
+  path => \"/var/cfengine/modules/promises/git.py\";
+  interpreter => \"/usr/bin/python3\";
+}
+bundle agent other
+{
+  git:
+    \"/srv/a\"
+      repository => \"https://example.com/a.git\",
+      version => \"main\";
+}
+"
+  "A custom promise type and a use of it.")
+
+(ert-deftest cfengine-ts-mode-completes-custom-promise-types ()
+  (cfengine-ts-mode-tests--with-syntax
+    (let ((complete (lambda (text)
+                      (cfengine-ts-mode-tests--complete
+                       (concat cfengine-ts-mode-tests--custom text)))))
+      ;; The type itself, in agent bundles only.
+      (let ((result (funcall complete "bundle agent main\n{\n  gi|\n}\n")))
+        (should (equal (nth 1 result) '("git")))
+        (should (equal (funcall (plist-get (nthcdr 3 (nth 2 result))
+                                           :annotation-function)
+                                "git")
+                       " custom promise type")))
+      (should-not (member "git" (nth 1 (funcall complete
+                                                "bundle edit_line e\n{\n  gi|\n}\n"))))
+      ;; Its attributes: those of every promise type, and those used with it.
+      (let ((candidates
+             (nth 1 (funcall complete
+                             "bundle agent main\n{\n  git:\n    \"/srv/b\"\n      |\n}\n"))))
+        (dolist (name '("if" "unless" "meta" "classes" "repository" "version"))
+          (should (member name candidates)))
+        (should-not (member "create" candidates)))
+      ;; A promise block's attributes.
+      (should (equal (nth 1 (cfengine-ts-mode-tests--complete
+                             "promise agent p\n{\n  inter|\n}\n"))
+                     '("interpreter"))))))
+
+(ert-deftest cfengine-ts-mode-custom-promise-type-docs-and-xref ()
+  (cfengine-ts-mode-tests--with-syntax
+    (with-temp-buffer
+      (insert cfengine-ts-mode-tests--custom)
+      (cfengine-ts-mode)
+      (let ((cfengine-ts-mode-docs-version "lts"))
+        (dolist (case '(("interpreter" "promise-types/custom/")
+                        ("git:" "promise-types/custom/")
+                        ("repository" "promise-types/custom/")
+                        ("main\"" "promise-types/custom/")))
+          (goto-char (point-min))
+          (search-forward (car case))
+          (goto-char (1+ (match-beginning 0)))
+          (should (equal (cfengine-ts-mode-docs-url)
+                         (concat "https://docs.cfengine.com/docs/lts/reference/"
+                                 (cadr case))))))
+      ;; ElDoc says nothing about the type's own attributes.
+      (goto-char (point-min))
+      (search-forward "repository")
+      (should-not (cfengine-ts-mode--eldoc-attribute))
+      (should (equal (mapcar #'xref-item-summary
+                             (xref-backend-definitions 'cfengine-ts "git"))
+                     '("promise agent git"))))))
+
 (ert-deftest cfengine-ts-mode-completes-attributes ()
   (cfengine-ts-mode-tests--with-syntax
     (should (equal (nth 1 (cfengine-ts-mode-tests--complete

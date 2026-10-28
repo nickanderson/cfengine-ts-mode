@@ -10,6 +10,7 @@ First release.
 - A Flymake backend and a Flycheck checker for ~cfengine lint~, linting with the rest of the policy tree in strict mode when the file is in one
 - Indentation while typing incomplete code, and comments that follow the code typed after them
 - Completion of promise types, attributes, option values and body and bundle names from the ~cf-promises~ syntax, and ElDoc for attributes
+- Custom promise types defined by ~promise~ blocks: completion of the type, of its attributes and of the block's own, ~M-.~ and ~C-c C-d~
 - ~cfengine-ts-mode-browse-docs~ (~C-c C-d~) opens the reference documentation for the thing at point
 - Completion of built-in function names and ElDoc signatures, from =cfengine.el=
 - Jump to bundle and body definitions and list references (~M-.~, ~M-?~) across the policy tree
