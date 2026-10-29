@@ -37,6 +37,8 @@ Then build the grammar once (needs a C compiler and git):
 
 : M-x cfengine-ts-mode-install-grammar
 
+The grammar is generated for tree-sitter ABI 15, so Emacs must be linked against libtree-sitter 0.25 or newer. ~M-: (treesit-library-abi-version)~ must return 15. An Emacs built against an older library, such as the 0.20 in Ubuntu 24.04, reports ~version-mismatch 15~ when the grammar loads, and policy files open in ~cfengine3-mode~ instead. This is a property of the library Emacs was built with, not of the Emacs version.
+
 No ~auto-mode-alist~ setup is needed.
 
 ** Opting out of detection by content
