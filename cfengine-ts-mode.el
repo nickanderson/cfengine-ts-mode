@@ -278,7 +278,7 @@ The grammar parses attributes after @else as a separate half_promise."
   "Node types holding the contents of a block.")
 
 (defun cfengine-ts-mode--indented-p (node)
-  "Non-nil if NODE indents its children one level."
+  "Non-nil if the children of NODE are indented one level."
   (and node (member (treesit-node-type node) cfengine-ts-mode--indented-types)))
 
 (defun cfengine-ts-mode--level-column (node)
@@ -363,7 +363,7 @@ comment stays with the block above it."
       (point))))
 
 (defun cfengine-ts-mode--code-line-p ()
-  "Non-nil if the current line holds code: not blank, comment or macro."
+  "Non-nil if there is code on the current line: not blank, comment or macro."
   (save-excursion
     (back-to-indentation)
     (not (or (eolp) (looking-at-p "[#@]")))))
@@ -395,7 +395,7 @@ comment stays with the block above it."
     (looking-at-p "bundle\\_>")))
 
 (defun cfengine-ts-mode--statement-line ()
-  "Move to the line where the statement on the current line starts.
+  "Move to the first line of the statement on the current line.
 That is the line of the opening bracket for a line starting with a
 closing one, or the first line of a string continued onto this line."
   (back-to-indentation)
@@ -889,11 +889,16 @@ results."
                       (flymake-diagnostic-beg d)
                       (pcase (flymake-diagnostic-type d)
                         (:error 'error) (:warning 'warning) (_ 'info))
-                      (flymake-diagnostic-text d)
+                      (cfengine-ts-mode--diagnostic-message d)
                       :end-pos (flymake-diagnostic-end d)
                       :checker checker))
                    diagnostics)))))
     cfengine-ts-mode--lint-process))
+
+(defun cfengine-ts-mode--diagnostic-message (diagnostic)
+  "Return the message of Flymake DIAGNOSTIC.
+Newer Flymake puts the empty origin and code before it, with spaces."
+  (string-trim-left (flymake-diagnostic-text diagnostic)))
 
 (defun cfengine-ts-mode--flycheck-interrupt (_checker process)
   "Stop the `cfengine lint' PROCESS of a Flycheck check."
@@ -996,7 +1001,7 @@ Keys: :block (KIND TYPE), :name (the block's), :section, :depth,
   "Syntax entries of the attributes of a custom promise type block.")
 
 (defun cfengine-ts-mode--common-attributes ()
-  "Return the syntax entries of the attributes every promise type allows."
+  "Return the syntax entries of the attributes allowed in every promise type."
   (let ((types (cfengine-ts-mode--syntax 'promiseTypes)))
     (seq-filter (lambda (attribute)
                   (seq-every-p (lambda (type)
@@ -1138,7 +1143,7 @@ A file visited in a buffer with unsaved changes is given as that buffer."
   "The buffer's definitions, as (MODIFICATION-TICK . DEFINITIONS).")
 
 (defun cfengine-ts-mode--buffer-definitions ()
-  "Return the definitions in the current buffer, cached until it changes."
+  "Return the definitions in the current buffer, cached until modified."
   (let ((tick (buffer-chars-modified-tick)))
     (if (eql (car cfengine-ts-mode--buffer-definitions) tick)
         (cdr cfengine-ts-mode--buffer-definitions)
@@ -1175,7 +1180,7 @@ name."
                          (cfengine-ts-mode--definitions)))))))
 
 (defun cfengine-ts-mode--statement-start-p (open)
-  "Non-nil if a new statement starts at point, in the block opened at OPEN.
+  "Non-nil if point is at the start of a statement in the block opened at OPEN.
 That is after a section header, a class guard, a finished statement or
 the block's brace, rather than in a promise awaiting more attributes."
   (save-excursion
@@ -1515,7 +1520,7 @@ so is a name with a dot; any other name among blocks and classes."
                           (cfengine-ts-mode--definitions))))))
 
 (cl-defmethod xref-backend-references ((_backend (eql cfengine-ts)) identifier)
-  "Return the uses of IDENTIFIER in the policy, outside comments.
+  "Return the references to IDENTIFIER in the policy, outside comments.
 Uses in strings count, as in usebundle => \"name\".  For a variable,
 the uses of its name, qualified or not."
   (let* ((identifier (replace-regexp-in-string "\\`.*[.:]" "" identifier))

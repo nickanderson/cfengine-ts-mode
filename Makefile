@@ -22,7 +22,8 @@ compile: emacs-version
 	  -f batch-byte-compile cfengine-ts-mode.el
 
 checkdoc: emacs-version
-	$(BATCH) --eval '(checkdoc-file "cfengine-ts-mode.el")' \
+	$(BATCH) --eval '(setq checkdoc-verb-check-experimental-flag t)' \
+	  --eval '(checkdoc-file "cfengine-ts-mode.el")' \
 	  --eval '(when (get-buffer "*Warnings*") (kill-emacs 1))'
 
 # Development packages from MELPA (package-lint, and flycheck for its

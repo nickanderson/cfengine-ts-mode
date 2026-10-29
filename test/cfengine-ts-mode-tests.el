@@ -245,7 +245,7 @@ typed and the tree is incomplete throughout."
                                    (with-current-buffer source
                                      (buffer-substring (flymake-diagnostic-beg d)
                                                        (flymake-diagnostic-end d)))
-                                   (flymake-diagnostic-text d)))
+                                   (cfengine-ts-mode--diagnostic-message d)))
                            diags)
                    '((:error "nosuchfn"
                              "Call to unknown function 'nosuchfn'. The body 'nosuchfn' is defined nowhere")
