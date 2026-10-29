@@ -85,7 +85,7 @@ make           # byte-compile, checkdoc, ERT tests
 make corpus MASTERFILES=~/src/masterfiles   # reindent all of masterfiles
 #+end_src
 
-Use ~EMACS=/path/to/emacs~ to test against a specific build. The indentation test strips all indentation from =test/indent.cf=, reindents, and compares; that fixture must stay unchanged under ~cfengine format~. ~make corpus~ does the same for every policy file in a masterfiles checkout, after running ~cfengine format~ on copies.
+Use ~EMACS=/path/to/emacs~ to test against a specific build; ~make~ stops at once if that Emacs is older than the package requires. The indentation test strips all indentation from =test/indent.cf=, reindents, and compares; that fixture must stay unchanged under ~cfengine format~. ~make corpus~ does the same for every policy file in a masterfiles checkout, after running ~cfengine format~ on copies.
 
 * License
 
